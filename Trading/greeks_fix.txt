@@ -1,0 +1,32 @@
+        for symbol in df['symbol']:
+            # Extract strike and option type from symbol
+            # Pattern: Extract strike (consecutive digits) and CE/PE at the end
+            match = re.search(r'(\\d+)(CE|PE)$', symbol)
+            if match:
+                strike_part = match.group(1)
+                type_part = match.group(2)
+                
+                strikes.append(int(strike_part))
+                option_types.append(type_part)
+            else:
+                strikes.append(None)
+                option_types.append(None)
+        
+        df['strike_price'] = strikes
+        df['option_type'] = option_types
+        
+        # Calculate days to expiry (DTE) as a proxy for theta analysis using the original expiry_date
+        df['dte'] = (df['expiry_date'] - df['trade_date']).dt.days
+        
+        # Calculate whether option is ITM, ATM, or OTM as a proxy for delta analysis
+        # Note: We don't have underlying price, so we'll use a simplified approach
+        # In a real system, you would need the underlying price at trade time
+        df['is_call'] = df['option_type'] == 'CE'
+        df['is_put'] = df['option_type'] == 'PE'
+        
+        # For now, we'll just identify some key Greeks-related characteristics
+        # In a production system, you would calculate actual Greeks values
+        df['is_itm'] = False  # Placeholder - would require underlying price
+        df['is_otm'] = False  # Placeholder - would require underlying price
+        
+        return df

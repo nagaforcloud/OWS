@@ -1,0 +1,2508 @@
+import time
+import threading
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Any
+import logging
+import signal
+import sys
+from dataclasses import dataclass
+import json
+import os
+import pandas as pd
+import numpy as np
+
+from models.models import Trade, Position, OptionContract, StrategyState, RiskMetrics
+from models.enums import OrderType, ProductType, TransactionType, StrategyType, OptionType
+from config.config import OptionWheelConfig
+from utils.logging_utils import get_logger
+from notifications.notification_manager import NotificationManager
+from database.database import DatabaseManager
+from risk_management.risk_manager import RiskManager
+
+logger = get_logger(__name__)
+
+class OptionWheelStrategy:
+    """
+    Core implementation of the Options Wheel Strategy for Indian Stock Market
+    """
+    
+    def __init__(self, config: OptionWheelConfig, kite_client=None):
+        """
+        Initialize the Options Wheel Strategy
+        
+        Args:
+            config: OptionWheelConfig instance
+            kite_client: KiteConnect client instance for live trading (None for backtesting)
+        """
+        self.config = config
+        self.kite = kite_client
+        self.notification_manager = NotificationManager(
+            config.notification_webhook_url if config.enable_notifications else None,
+            os.getenv('NOTIFICATION_TYPE', 'webhook')
+        )
+        self.db_manager = DatabaseManager()
+        self.risk_manager = RiskManager(config)
+        
+        # Strategy state
+        self.current_positions: Dict[str, Position] = {}
+        self.active_orders: Dict[str, Dict] = {}
+        self.historical_trades: List[Trade] = []
+        self.strategy_state = StrategyState(
+            current_positions=[],
+            historical_trades=[],
+            daily_pnl=0.0,
+            total_pnl=0.0,
+            strategy_type=StrategyType.CASH_SECURED_PUT,  # Start with cash secured puts
+            last_updated=datetime.now()
+        )
+        
+        # Performance tracking
+        self.performance_metrics = {
+            'total_pnl': 0.0,
+            'total_trades': 0,
+            'winning_trades': 0,
+            'losing_trades': 0,
+            'win_rate': 0.0,
+            'profit_factor': 0.0,
+            'max_drawdown': 0.0
+        }
+        
+        # State management
+        self.state_file_path = "strategy_state.json"
+        self.load_strategy_state()
+        
+        # Threading and control
+        self.running = False
+        self.main_loop_thread = None
+        
+        # Safety & Compliance features
+        self.kill_switch_file = config.kill_switch_file
+        self.dry_run_mode = config.dry_run
+        
+        # Initialize Kite connection if provided
+        if self.kite:
+            if self.dry_run_mode:
+                logger.info("KiteConnect client initialized for live trading (DRY RUN MODE)")
+            else:
+                logger.info("KiteConnect client initialized for live trading")
+        else:
+            logger.info("Running in backtesting mode")
+    
+    def load_strategy_state(self):
+        """
+        Load strategy state from file if it exists
+        """
+        if os.path.exists(self.state_file_path):
+            try:
+                with open(self.state_file_path, 'r') as f:
+                    state_data = json.load(f)
+                
+                # Update strategy state from loaded data
+                self.strategy_state.daily_pnl = state_data.get('daily_pnl', 0.0)
+                self.strategy_state.total_pnl = state_data.get('total_pnl', 0.0)
+                
+                logger.info(f"Strategy state loaded from {self.state_file_path}")
+            except json.JSONDecodeError as e:
+                logger.error(f"Error loading strategy state: {e}. Starting with fresh state.")
+            except Exception as e:
+                logger.error(f"Unexpected error loading strategy state: {e}")
+    
+    def save_strategy_state(self):
+        """
+        Save strategy state to file
+        """
+        try:
+            state_data = {
+                'daily_pnl': self.strategy_state.daily_pnl,
+                'total_pnl': self.strategy_state.total_pnl,
+                'last_updated': datetime.now().isoformat(),
+                'current_positions_count': len(self.current_positions),
+                'active_orders_count': len(self.active_orders),
+                'total_trades': self.performance_metrics['total_trades']
+            }
+            
+            with open(self.state_file_path, 'w') as f:
+                json.dump(state_data, f, indent=2, default=str)
+            
+            logger.info(f"Strategy state saved to {self.state_file_path}")
+        except Exception as e:
+            logger.error(f"Error saving strategy state: {e}")
+    
+    def is_market_open(self) -> bool:
+        """
+        Check if the market is currently open based on configuration
+        
+        Returns:
+            bool: True if market is open, False otherwise
+        """
+        now = datetime.now()
+        current_time = now.time()
+        
+        # Define market open and close times from config
+        market_open = datetime.combine(now.date(), 
+                                     datetime.min.time().replace(
+                                         hour=self.config.market_open_hour,
+                                         minute=self.config.market_open_minute
+                                     )).time()
+        
+        market_close = datetime.combine(now.date(),
+                                      datetime.min.time().replace(
+                                          hour=self.config.market_close_hour,
+                                          minute=self.config.market_close_minute
+                                      )).time()
+        
+        # Check if it's a weekday and within market hours
+        is_weekday = now.weekday() < 5  # Monday to Friday
+        is_open_time = market_open <= current_time <= market_close
+        
+        # Additional check for holidays
+        is_holiday = False
+        if self.config.use_holiday_calendar:
+            is_holiday = self.is_holiday(now.date())
+        
+        return not is_holiday and is_weekday and is_open_time
+
+    def is_holiday(self, date: datetime.date) -> bool:
+        """
+        Check if a date is a market holiday
+        
+        Args:
+            date: Date to check
+            
+        Returns:
+            bool: True if date is a holiday, False otherwise
+        """
+        import os
+        import csv
+        if self.config.use_holiday_calendar and os.path.exists(self.config.holiday_file_path):
+            try:
+                with open(self.config.holiday_file_path, 'r') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        holiday_date = datetime.strptime(row['date'], '%Y-%m-%d').date()
+                        if holiday_date == date:
+                            return True
+            except Exception as e:
+                logger.error(f"Error reading holiday file: {e}")
+        
+        # Check if weekend
+        return date.weekday() >= 5  # Saturday and Sunday
+
+    def check_kill_switch(self) -> bool:
+        """
+        Check if kill switch file exists to halt trading
+        
+        Returns:
+            bool: True if kill switch is activated (trading should stop), False otherwise
+        """
+        import os
+        kill_switch_exists = os.path.exists(self.kill_switch_file)
+        if kill_switch_exists:
+            logger.warning(f"Kill switch activated: {self.kill_switch_file} exists. Stopping trading.")
+        return kill_switch_exists
+
+    def get_ist_time(self) -> datetime:
+        """
+        Get current time in Indian Standard Time (IST)
+        
+        Returns:
+            datetime: Current time in IST timezone
+        """
+        from datetime import datetime
+        import pytz
+        ist = pytz.timezone('Asia/Kolkata')
+        return datetime.now(ist)
+
+    def get_margin_info(self) -> dict:
+        """
+        Get real-time margin information from Kite
+        
+        Returns:
+            dict: Margin information with available and utilized margins
+        """
+        try:
+            if self.kite and not self.dry_run_mode:
+                margins = self.kite.margins()
+                return margins
+            else:
+                # For dry run/backtesting, return mock data
+                return {
+                    'available': {
+                        'cash': self.config.min_cash_reserve + 50000,  # Mock available margin
+                        'intraday_payin': 0,
+                        'adhoc_margin': 0,
+                        'collateral': 0
+                    },
+                    'utilised': {
+                        'debits': 0,
+                        'payable_margin': 0,
+                        'span': 0,
+                        'exposure': 0,
+                        'option_premium': 0,
+                        'holding_sales': 0,
+                        ' turnover': 0
+                    }
+                }
+        except Exception as e:
+            logger.error(f"Error getting margin information: {e}")
+            return {}
+
+    def is_sufficient_margin(self, required_margin: float) -> bool:
+        """
+        Check if there is sufficient margin available for trading
+        
+        Args:
+            required_margin: Required margin for the trade
+            
+        Returns:
+            bool: True if sufficient margin is available, False otherwise
+        """
+        margins = self.get_margin_info()
+        available_cash = margins.get('available', {}).get('cash', 0)
+        
+        # Ensure minimum cash reserve is maintained
+        available_for_trading = available_cash - self.config.min_cash_reserve
+        
+        if available_for_trading < required_margin:
+            logger.warning(f"Insufficient margin: Required {required_margin}, Available {available_for_trading}")
+            return False
+            
+        return True
+    
+    def fetch_instruments(self, exchange: str = "NFO") -> List[Dict]:
+        """
+        Fetch all instruments from Kite (or use cached data for backtesting)
+        
+        Args:
+            exchange: Exchange to fetch instruments from (default: NFO)
+            
+        Returns:
+            List of instrument dictionaries
+        """
+        try:
+            if self.kite:
+                instruments = self.kite.instruments(exchange)
+                logger.info(f"Fetched {len(instruments)} instruments from {exchange}")
+                return instruments
+            else:
+                # For backtesting, return mock instruments
+                logger.info("Using mock instruments for backtesting")
+                return []
+        except Exception as e:
+            logger.error(f"Error fetching instruments from {exchange}: {e}")
+            return []
+    
+    def fetch_option_chain(self, symbol: str = "NIFTY") -> List[OptionContract]:
+        """
+        Fetch option chain with fallback mechanisms (Primary: NSE India API, Fallback: Kite instruments + OHLC)
+        
+        Args:
+            symbol: Symbol to fetch option chain for (default: NIFTY)
+            
+        Returns:
+            List of OptionContract objects
+        """
+        try:
+            # Check if we have cached data that's still fresh
+            cache_key = f"{symbol}_option_chain"
+            cached_data = self._get_cached_data(cache_key)
+            if cached_data:
+                logger.info(f"Using cached option chain for {symbol}")
+                return cached_data
+
+            contracts = []
+            success = False
+
+            # Primary: NSE India API
+            if self.kite and not self.dry_run_mode:
+                logger.info("Attempting to fetch option chain from NSE India API...")
+                try:
+                    from backtesting.nse_data_collector import NSEDataCollector
+                    collector = NSEDataCollector()
+                    
+                    option_chain_data = collector.get_option_chain(symbol)
+                    if option_chain_data:
+                        contracts = self._parse_nse_option_chain(option_chain_data, symbol)
+                        success = True
+                        logger.info(f"Successfully fetched {len(contracts)} contracts from NSE API")
+                except Exception as e:
+                    logger.warning(f"NSE API failed: {e}. Trying fallback method...")
+
+            # Fallback: Use Kite instruments if NSE API fails
+            if not success and self.kite:
+                logger.info("Using fallback: fetching from Kite instruments...")
+                try:
+                    # Get instruments for the specific symbol
+                    instruments = self.kite.instruments(f"NFO:{symbol}")
+                    if instruments:
+                        contracts = self._parse_kite_instruments(instruments, symbol)
+                        success = True
+                        logger.info(f"Successfully fetched {len(contracts)} contracts from Kite")
+                except Exception as e:
+                    logger.error(f"Kite instruments fallback failed: {e}")
+
+            # If still no data, return mock data for backtesting
+            if not success:
+                if self.dry_run_mode or not self.kite:
+                    logger.info("Using mock option chain for dry run/backtesting")
+                    contracts = self._generate_mock_option_chain(symbol)
+                    success = True
+                else:
+                    logger.error(f"Could not fetch option chain for {symbol} from any source")
+                    return []
+
+            # Cache the data for DATA_REFRESH_INTERVAL seconds
+            if success:
+                self._cache_data(cache_key, contracts, self.config.data_refresh_interval)
+                logger.info(f"Successfully fetched {len(contracts)} option contracts for {symbol}")
+                return contracts
+            else:
+                return []
+
+        except Exception as e:
+            logger.error(f"Error fetching option chain for {symbol}: {e}")
+            # Return cached data if available as last resort
+            cached_data = self._get_cached_data(cache_key)
+            if cached_data:
+                logger.info("Falling back to cached data")
+                return cached_data
+            return []
+
+    def _parse_nse_option_chain(self, option_chain_data: Dict, symbol: str) -> List[OptionContract]:
+        """
+        Parse NSE option chain data into OptionContract objects
+        """
+        contracts = []
+        records = option_chain_data.get('records', {})
+        data_list = records.get('data', [])
+        
+        for entry in data_list:
+            strike = entry.get('strikePrice')
+            expiry_str = entry.get('expiryDate')
+            
+            # Parse expiry date
+            expiry = None
+            if expiry_str:
+                try:
+                    expiry = datetime.strptime(expiry_str, '%d-%b-%Y')
+                except ValueError:
+                    pass  # Skip if date parsing fails
+            
+            # Process CE and PE contracts
+            for option_type_str, option_data in [('CE', entry.get('CE', {})), ('PE', entry.get('PE', {}))]:
+                if option_data:
+                    try:
+                        contract = OptionContract(
+                            symbol=f"{symbol}{strike}{option_type_str}{expiry.strftime('%y%b%d').upper() if expiry else ''}",
+                            instrument_token=option_data.get('instrumentToken', 0),
+                            exchange=option_data.get('exchange', 'NFO'),
+                            option_type=OptionType.CALL if option_type_str == 'CE' else OptionType.PUT,
+                            strike_price=strike,
+                            expiry_date=expiry,
+                            last_price=option_data.get('lastPrice', 0.0),
+                            open_interest=option_data.get('openInterest', 0),
+                            volume=option_data.get('totalTradedVolume', 0),
+                            oi_day_high=option_data.get('openInterestDayHigh', 0),
+                            oi_day_low=option_data.get('openInterestDayLow', 0),
+                            bid_price=option_data.get('bidPrice', 0.0),
+                            ask_price=option_data.get('askPrice', 0.0),
+                            underlying_value=records.get('underlyingValue', 0.0),
+                            delta=option_data.get('impliedVolatility', 0.0),  # Placeholder
+                            gamma=0.0,  # Placeholder
+                            theta=0.0,  # Placeholder
+                            vega=0.0,   # Placeholder
+                            rho=0.0     # Placeholder
+                        )
+                        contracts.append(contract)
+                    except Exception as e:
+                        logger.warning(f"Error creating option contract for {symbol}{strike}{option_type_str}: {e}")
+        
+        return contracts
+
+    def _parse_kite_instruments(self, instruments: List[Dict], symbol: str) -> List[OptionContract]:
+        """
+        Parse Kite instruments into OptionContract objects
+        """
+        contracts = []
+        for instrument in instruments:
+            try:
+                # Filter for options for the specified symbol
+                tradingsymbol = instrument.get('tradingsymbol', '')
+                if symbol in tradingsymbol and ('CE' in tradingsymbol or 'PE' in tradingsymbol):
+                    # Extract strike and option type from symbol
+                    strike, option_type_str = self._extract_strike_and_type(tradingsymbol)
+                    if strike and option_type_str:
+                        contract = OptionContract(
+                            symbol=tradingsymbol,
+                            instrument_token=instrument.get('instrument_token', 0),
+                            exchange=ExchangeType(instrument.get('exchange', 'NFO')),
+                            option_type=OptionType.CALL if 'CE' in tradingsymbol else OptionType.PUT,
+                            strike_price=strike,
+                            expiry_date=datetime.fromtimestamp(instrument.get('expiry', 0)) if instrument.get('expiry') else None,
+                            last_price=0.0,  # Will need to fetch OHLC data separately
+                            open_interest=0,  # Not available in instruments
+                            volume=0,  # Not available in instruments
+                            oi_day_high=0,
+                            oi_day_low=0,
+                            bid_price=0.0,
+                            ask_price=0.0,
+                            underlying_value=0.0,
+                            delta=None,
+                            gamma=None,
+                            theta=None,
+                            vega=None,
+                            rho=None
+                        )
+                        contracts.append(contract)
+            except Exception as e:
+                logger.warning(f"Error parsing Kite instrument {instrument.get('tradingsymbol', 'N/A')}: {e}")
+        
+        return contracts
+
+    def _extract_strike_and_type(self, symbol: str) -> tuple:
+        """
+        Extract strike price and option type from trading symbol
+        
+        Args:
+            symbol: Trading symbol (e.g., NIFTY2140814950CE)
+            
+        Returns:
+            tuple: (strike_price, option_type) or (None, None)
+        """
+        import re
+        # Pattern: Extract strike (consecutive digits) and CE/PE at the end
+        match = re.search(r'(\d+)(CE|PE)
+    
+    def get_nearest_expiry_options(self, symbol: str = "NIFTY") -> List[OptionContract]:
+        """
+        Get options contracts for the nearest expiry date
+        
+        Args:
+            symbol: Symbol to get options for
+            
+        Returns:
+            List of OptionContract objects for nearest expiry
+        """
+        try:
+            option_chain = self.fetch_option_chain(symbol)
+            if not option_chain:
+                logger.error(f"No option chain data for {symbol}")
+                return []
+            
+            # Find the nearest expiry date
+            current_time = datetime.now()
+            expiry_dates = set(oc.expiry_date for oc in option_chain if oc.expiry_date)
+            valid_expiry_dates = [dt for dt in expiry_dates if dt >= current_time.date()]
+            
+            if not valid_expiry_dates:
+                logger.error(f"No valid expiry dates found for {symbol}")
+                return []
+            
+            nearest_expiry = min(valid_expiry_dates)
+            nearest_contracts = [oc for oc in option_chain if oc.expiry_date == nearest_expiry]
+            
+            logger.info(f"Found {len(nearest_contracts)} contracts for nearest expiry {nearest_expiry}")
+            return nearest_contracts
+        except Exception as e:
+            logger.error(f"Error getting nearest expiry options for {symbol}: {e}")
+            return []
+    
+    def find_best_strike(self, options: List[OptionContract], option_type: OptionType, 
+                        underlying_price: float) -> Optional[OptionContract]:
+        """
+        Find the best strike based on delta range and open interest
+        
+        Args:
+            options: List of option contracts to evaluate
+            option_type: Type of option (CALL or PUT)
+            underlying_price: Current price of the underlying
+            
+        Returns:
+            Best OptionContract or None if not found
+        """
+        try:
+            # Filter by option type
+            filtered_options = [opt for opt in options if opt.option_type == option_type]
+            
+            # Filter by delta range (if available)
+            if option_type == OptionType.PUT:
+                # For cash-secured puts: OTM puts (strike < underlying)
+                otm_options = [opt for opt in filtered_options if opt.strike_price < underlying_price]
+            else:  # CALL
+                # For covered calls: OTM calls (strike > underlying)
+                otm_options = [opt for opt in filtered_options if opt.strike_price > underlying_price]
+            
+            # Filter by our delta criteria and minimum open interest
+            filtered_options = []
+            for opt in otm_options:
+                if opt.open_interest >= self.config.min_open_interest:
+                    # Calculate approximate delta if not available
+                    if opt.delta is not None:
+                        delta_abs = abs(opt.delta)
+                    else:
+                        # Approximate delta based on moneyness
+                        moneyness = abs(underlying_price - opt.strike_price) / underlying_price
+                        delta_abs = 0.5 - moneyness if moneyness < 0.5 else 0.05  # Rough approximation
+                    
+                    # Check if delta is in our target range
+                    if (self.config.otm_delta_range_low <= delta_abs <= self.config.otm_delta_range_high):
+                        filtered_options.append(opt)
+            
+            if not filtered_options:
+                logger.info(f"No suitable {option_type.value} options found matching criteria")
+                return None
+            
+            # Select the option with the best premium (highest last_price)
+            best_option = max(filtered_options, key=lambda x: x.last_price)
+            
+            logger.info(f"Best {option_type.value} option found: {best_option.symbol} at {best_option.last_price}")
+            return best_option
+        except Exception as e:
+            logger.error(f"Error finding best strike: {e}")
+            return None
+    
+    def place_order(self, symbol: str, transaction_type: TransactionType, quantity: int, 
+                   price: float, trigger_price: float = 0, order_type: OrderType = OrderType.MARKET) -> Optional[str]:
+        """
+        Place an order using the Kite API
+        
+        Args:
+            symbol: Trading symbol
+            transaction_type: BUY or SELL
+            quantity: Quantity to trade
+            price: Price for LIMIT orders
+            trigger_price: Trigger price for SL orders
+            order_type: Order type (MARKET, LIMIT, SL, SLM)
+            
+        Returns:
+            Order ID if successful, None otherwise
+        """
+        try:
+            # Check kill switch first
+            if self.check_kill_switch():
+                logger.warning("Kill switch activated, not placing order")
+                return None
+                
+            # Calculate required margin for the order
+            required_margin = price * quantity  # This is a simplified calculation
+            
+            # Check if order type and quantity comply with Indian market rules
+            product_type = self._get_product_type_for_order(symbol, transaction_type)
+            
+            if not self.is_sufficient_margin(required_margin):
+                logger.warning(f"Insufficient margin to place order for {symbol}")
+                return None
+
+            if not self.kite:
+                logger.warning("Running in backtesting mode - simulating order placement")
+                # For backtesting, create a mock order ID
+                import random
+                order_id = f"BT{random.randint(100000, 999999)}"
+                
+                # Create mock order details
+                mock_order = {
+                    'order_id': order_id,
+                    'status': 'COMPLETE',
+                    'average_price': price,
+                    'filled_quantity': quantity,
+                    'pending_quantity': 0
+                }
+                
+                # Update active orders
+                self.active_orders[order_id] = mock_order
+                
+                logger.info(f"Mock order placed: {order_id} for {symbol}")
+                return order_id
+            
+            # If dry run mode, only log the order but don't place it
+            if self.config.dry_run:
+                logger.info(f"[DRY RUN] Would have placed order: {transaction_type.value} {quantity} {symbol} at {price}")
+                logger.info(f"[DRY RUN] Order parameters: {symbol}, {transaction_type.value}, {quantity}, {price}, {order_type.value}")
+                
+                # Create a mock order ID for dry run
+                import random
+                order_id = f"DRY{random.randint(100000, 999999)}"
+                
+                # Track as a mock order
+                self.active_orders[order_id] = {
+                    'symbol': symbol,
+                    'status': 'COMPLETE',  # Mark as complete in dry run
+                    'quantity': quantity,
+                    'price': price,
+                    'transaction_type': transaction_type,
+                    'dry_run': True
+                }
+                
+                # Send notification indicating dry run
+                self.notification_manager.notify_order_placed(
+                    order_id, f"[DRY RUN] {symbol}", quantity, price, transaction_type.value
+                )
+                
+                return order_id
+
+            # Place live order
+            order_params = {
+                "variety": "regular",
+                "exchange": "NFO",  # For options
+                "tradingsymbol": symbol,
+                "transaction_type": transaction_type.value,
+                "quantity": quantity,
+                "product": product_type.value,  # Using proper product type
+                "order_type": order_type.value,
+                "validity": "DAY"  # Good for the day
+            }
+            
+            # Set price and trigger_price based on order type
+            if order_type == OrderType.LIMIT:
+                order_params["price"] = price
+            elif order_type == OrderType.MARKET:
+                # For market orders, price is not required
+                pass
+            else:
+                # For SL orders
+                order_params["price"] = price
+                order_params["trigger_price"] = trigger_price
+            
+            order_id = self.kite.place_order(**order_params)
+            
+            logger.info(f"Live order placed: {order_id} for {symbol}")
+            
+            # Track the order
+            self.active_orders[order_id] = {
+                'symbol': symbol,
+                'status': 'OPEN',
+                'quantity': quantity,
+                'price': price,
+                'transaction_type': transaction_type,
+                'product_type': product_type
+            }
+            
+            # Send notification
+            self.notification_manager.notify_order_placed(
+                order_id, symbol, quantity, price, transaction_type.value
+            )
+            
+            return order_id
+            
+        except Exception as e:
+            logger.error(f"Error placing order for {symbol}: {e}")
+            self.notification_manager.notify_error("Order Placement", f"Failed to place order for {symbol}: {e}")
+            return None
+
+    def _get_product_type_for_order(self, symbol: str, transaction_type: TransactionType) -> ProductType:
+        """
+        Determine the appropriate product type for an order based on Indian market rules
+        
+        Args:
+            symbol: Trading symbol
+            transaction_type: Transaction type (BUY/SELL)
+            
+        Returns:
+            ProductType: Appropriate product type for the order
+        """
+        # For options trading, we typically use NRML for overnight positions
+        # and MIS for intraday positions
+        # For the Options Wheel strategy, we want to hold positions overnight
+        # so we'll use NRML (Normal) product type
+        return ProductType.NRML
+
+    def calculate_position_size(self, underlying_price: float) -> int:
+        """
+        Calculate dynamic position size based on risk parameters
+        
+        Args:
+            underlying_price: Current price of the underlying asset
+            
+        Returns:
+            int: Calculated position size (quantity)
+        """
+        try:
+            # Calculate max risk based on portfolio value and risk parameters
+            portfolio_value = self.get_portfolio_value()
+            max_risk = portfolio_value * self.config.risk_per_trade_percent
+            
+            # Calculate position size based on risk and underlying price
+            max_lots = int(max_risk / (underlying_price * self.config.quantity_per_lot))
+            
+            # Ensure minimum lot size is at least 1
+            calculated_lots = max(1, max_lots)
+            
+            # Don't exceed the configured maximum quantity
+            final_lots = min(calculated_lots, int(self.config.quantity_per_lot))
+            
+            # Ensure we have sufficient margin for the calculated position
+            required_margin = underlying_price * final_lots * self.config.quantity_per_lot
+            if not self.is_sufficient_margin(required_margin):
+                # Reduce position size if margin is insufficient
+                available_capital = self.get_available_capital()
+                max_lots_with_margin = int(available_capital / (underlying_price * self.config.quantity_per_lot))
+                final_lots = max(1, max_lots_with_margin)
+            
+            logger.debug(f"Position sizing: Portfolio={portfolio_value}, Risk%={self.config.risk_per_trade_percent}, "
+                        f"Max Risk={max_risk}, Calculated lots={calculated_lots}, Final lots={final_lots}")
+            
+            return final_lots * self.config.quantity_per_lot  # Return total quantity, not number of lots
+        except Exception as e:
+            logger.error(f"Error calculating position size: {e}")
+            # Fallback to config default
+            return self.config.quantity_per_lot
+    
+    def execute_cash_secured_puts(self):
+        """
+        Execute Cash-Secured Puts strategy: sell OTM puts to collect premium
+        """
+        logger.info("Executing Cash-Secured Puts strategy")
+        
+        try:
+            # Check if we already have any stock positions
+            stock_positions = {symbol: pos for symbol, pos in self.current_positions.items() 
+                              if pos.quantity > 0}
+            
+            # Only execute cash-secured puts if we don't have the underlying
+            if stock_positions:
+                logger.info("Stock position exists, skipping Cash-Secured Puts")
+                return
+            
+            # Get underlying price
+            underlying_price = self.get_underlying_price(self.config.symbol)
+            if not underlying_price:
+                logger.error(f"Could not get underlying price for {self.config.symbol}")
+                return
+            
+            # Calculate dynamic position size
+            quantity = self.calculate_position_size(underlying_price)
+            
+            # Check risk management
+            portfolio_value = self.get_portfolio_value()
+            if not self.risk_manager.should_place_order(self.config.symbol, 
+                                                      quantity, 
+                                                      underlying_price, 
+                                                      portfolio_value)[0]:
+                logger.info("Risk check failed, not placing cash-secured put")
+                return
+            
+            # Get nearest expiry options
+            options = self.get_nearest_expiry_options(self.config.symbol)
+            if not options:
+                logger.error(f"No options available for {self.config.symbol}")
+                return
+            
+            # Find best OTM put
+            best_put = self.find_best_strike(options, OptionType.PUT, underlying_price)
+            if not best_put:
+                logger.info("No suitable put option found for cash-secured puts")
+                return
+            
+            # Calculate required capital for cash-secured put
+            # Need enough cash to buy the stock if assigned
+            required_capital = best_put.strike_price * quantity
+            
+            # Check if we have sufficient capital
+            available_capital = self.get_available_capital()
+            if available_capital < required_capital:
+                logger.warning(f"Insufficient capital for cash-secured put. Required: {required_capital}, Available: {available_capital}")
+                return
+            
+            # Place order to sell the put
+            order_id = self.place_order(
+                symbol=best_put.symbol,
+                transaction_type=TransactionType.SELL,
+                quantity=quantity,
+                price=best_put.last_price,
+                order_type=OrderType.MARKET
+            )
+            
+            if order_id:
+                logger.info(f"Cash-Secured Put placed: {best_put.symbol} at {best_put.last_price}, quantity: {quantity}")
+                self.strategy_state.strategy_type = StrategyType.CASH_SECURED_PUT
+                return order_id
+            else:
+                logger.error("Failed to place Cash-Secured Put order")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error executing Cash-Secured Puts: {e}")
+            return None
+    
+    def execute_covered_calls(self):
+        """
+        Execute Covered Calls strategy: sell OTM calls against existing stock holdings
+        """
+        logger.info("Executing Covered Calls strategy")
+        
+        try:
+            # Check if we have any stock positions
+            stock_positions = {symbol: pos for symbol, pos in self.current_positions.items() 
+                              if pos.quantity > 0}
+            
+            if not stock_positions:
+                logger.info("No stock positions for covered calls")
+                return
+            
+            # For each stock position, sell OTM call
+            order_ids = []
+            for symbol, position in stock_positions.items():
+                # Get current price of the stock
+                stock_price = self.get_underlying_price(symbol)
+                if not stock_price:
+                    logger.error(f"Could not get price for {symbol}")
+                    continue
+                
+                # Calculate dynamic position size for this stock
+                quantity = min(position.quantity, self.calculate_position_size(stock_price))
+                
+                # Get options for this stock
+                options = self.get_nearest_expiry_options(symbol)
+                if not options:
+                    logger.error(f"No options available for {symbol}")
+                    continue
+                
+                # Find best OTM call (strike > current price)
+                best_call = self.find_best_strike(options, OptionType.CALL, stock_price)
+                if not best_call:
+                    logger.info(f"No suitable call option found for {symbol}")
+                    continue
+                
+                # Check risk management
+                portfolio_value = self.get_portfolio_value()
+                if not self.risk_manager.should_place_order(symbol, 
+                                                          quantity,  # Use calculated quantity
+                                                          best_call.last_price, 
+                                                          portfolio_value)[0]:
+                    logger.info(f"Risk check failed for covered call on {symbol}")
+                    continue
+                
+                # Place order to sell the call
+                order_id = self.place_order(
+                    symbol=best_call.symbol,
+                    transaction_type=TransactionType.SELL,
+                    quantity=quantity,  # Use calculated quantity
+                    price=best_call.last_price,
+                    order_type=OrderType.MARKET
+                )
+                
+                if order_id:
+                    logger.info(f"Covered Call placed: {best_call.symbol} at {best_call.last_price}, quantity: {quantity} against {symbol}")
+                    order_ids.append(order_id)
+                    self.strategy_state.strategy_type = StrategyType.COVERED_CALL
+                else:
+                    logger.error(f"Failed to place Covered Call order for {best_call.symbol}")
+        
+            return order_ids
+            
+        except Exception as e:
+            logger.error(f"Error executing Covered Calls: {e}")
+            return []
+    
+    def monitor_positions(self):
+        """
+        Monitor existing positions and manage profit targets/stop losses
+        """
+        logger.debug("Monitoring positions for profit targets/stop losses")
+        
+        try:
+            for symbol, position in list(self.current_positions.items()):
+                # Get current price for this position
+                current_data = self.get_quote(symbol)
+                if not current_data:
+                    continue
+                
+                current_price = current_data.get('last_price', 0.0)
+                if current_price <= 0:
+                    continue
+                
+                # Calculate P&L
+                if position.quantity > 0:  # Long position
+                    pnl = (current_price - position.average_price) * position.quantity
+                else:  # Short position
+                    pnl = (position.average_price - current_price) * abs(position.quantity)
+                
+                # Calculate percentage P&L
+                avg_cost = position.average_price * abs(position.quantity)
+                if avg_cost > 0:
+                    pnl_pct = (pnl / avg_cost) * 100
+                else:
+                    continue
+                
+                # Check profit target
+                profit_target = self.config.profit_target_percentage * 100
+                if pnl_pct >= profit_target:
+                    logger.info(f"Profit target hit for {symbol}: {pnl_pct:.2f}%")
+                    self.close_position(symbol, "PROFIT_TARGET")
+                    self.notification_manager.notify_profit_target_hit(symbol, pnl)
+                
+                # Check stop loss
+                stop_loss = -self.config.loss_limit_percentage * 100
+                if pnl_pct <= stop_loss:
+                    logger.warning(f"Stop loss hit for {symbol}: {pnl_pct:.2f}%")
+                    self.close_position(symbol, "STOP_LOSS")
+                    self.notification_manager.notify_stop_loss_hit(symbol, pnl)
+            
+        except Exception as e:
+            logger.error(f"Error monitoring positions: {e}")
+    
+    def close_position(self, symbol: str, reason: str = "MANUAL"):
+        """
+        Close a position by placing an opposite order
+        """
+        try:
+            position = self.current_positions.get(symbol)
+            if not position:
+                logger.warning(f"No position found to close for {symbol}")
+                return False
+            
+            # Place order to close position
+            transaction_type = (TransactionType.BUY if position.quantity < 0 
+                              else TransactionType.SELL)
+            
+            current_data = self.get_quote(symbol)
+            if not current_data:
+                logger.error(f"Could not get price to close position for {symbol}")
+                return False
+            
+            price = current_data.get('last_price', 0.0)
+            quantity = abs(position.quantity)
+            
+            order_id = self.place_order(
+                symbol=symbol,
+                transaction_type=transaction_type,
+                quantity=quantity,
+                price=price,
+                order_type=OrderType.MARKET
+            )
+            
+            if order_id:
+                # Remove position after successful order
+                if symbol in self.current_positions:
+                    del self.current_positions[symbol]
+                
+                logger.info(f"Position closed for {symbol} (Reason: {reason})")
+                self.notification_manager.notify_position_closed(symbol, 
+                    (price - position.average_price) * position.quantity if position.quantity > 0 
+                    else (position.average_price - price) * abs(position.quantity))
+                return True
+            else:
+                logger.error(f"Failed to close position for {symbol}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error closing position for {symbol}: {e}")
+            return False
+    
+    def get_underlying_price(self, symbol: str) -> float:
+        """
+        Get the current price of the underlying asset
+        
+        Args:
+            symbol: Symbol to get price for
+            
+        Returns:
+            Current price of the underlying or 0.0 if not available
+        """
+        try:
+            if self.kite:
+                quote = self.kite.quote([symbol])
+                if symbol in quote:
+                    return quote[symbol].get('last_price', 0.0)
+            else:
+                # For backtesting, return a mock price
+                import random
+                return random.uniform(1000, 5000)  # Mock price between 1000-5000
+            
+            return 0.0
+        except Exception as e:
+            logger.error(f"Error getting price for {symbol}: {e}")
+            return 0.0
+    
+    def get_quote(self, symbol: str) -> Dict:
+        """
+        Get market quote for a symbol
+        
+        Args:
+            symbol: Symbol to get quote for
+            
+        Returns:
+            Dictionary with market data
+        """
+        try:
+            if self.kite:
+                return self.kite.quote([symbol]).get(symbol, {})
+            else:
+                # For backtesting
+                return {
+                    'last_price': self.get_underlying_price(symbol),
+                    'ohlc': {'open': 0, 'high': 0, 'low': 0, 'close': 0}
+                }
+        except Exception as e:
+            logger.error(f"Error getting quote for {symbol}: {e}")
+            return {}
+    
+    def get_portfolio_value(self) -> float:
+        """
+        Calculate total portfolio value
+        
+        Returns:
+            Total portfolio value
+        """
+        try:
+            if self.kite:
+                holdings = self.kite.holdings()
+                positions = self.kite.positions()
+                
+                total_value = 0.0
+                
+                # Add value of holdings
+                for holding in holdings:
+                    total_value += holding.get('close_price', 0) * holding.get('quantity', 0)
+                
+                # Add value of positions
+                net_positions = positions.get('net', [])
+                for pos in net_positions:
+                    last_price = pos.get('last_price', 0)
+                    quantity = pos.get('quantity', 0)
+                    total_value += last_price * quantity
+                
+                # Add available cash
+                margins = self.kite.margins()
+                total_value += margins.get('available', {}).get('cash', 0)
+                
+                return total_value
+            else:
+                # For backtesting, return a mock value
+                return 100000.0  # Starting capital
+                
+        except Exception as e:
+            logger.error(f"Error calculating portfolio value: {e}")
+            return 0.0
+    
+    def get_available_capital(self) -> float:
+        """
+        Get available capital for trading
+        
+        Returns:
+            Available capital
+        """
+        try:
+            if self.kite:
+                margins = self.kite.margins()
+                return margins.get('available', {}).get('cash', 0)
+            else:
+                # For backtesting, return mock available capital
+                return 50000.0  # Mock value
+        except Exception as e:
+            logger.error(f"Error getting available capital: {e}")
+            return 0.0
+    
+    def update_positions(self):
+        """
+        Update position tracking with latest data from broker
+        """
+        try:
+            if self.kite:
+                positions = self.kite.positions()
+                
+                # Update net positions
+                net_positions = positions.get('net', [])
+                
+                for pos_data in net_positions:
+                    # Create or update Position objects
+                    position = Position(
+                        symbol=pos_data.get('tradingsymbol'),
+                        exchange=pos_data.get('exchange'),
+                        instrument_token=pos_data.get('instrument_token'),
+                        product=ProductType(pos_data.get('product')),
+                        quantity=pos_data.get('quantity', 0),
+                        average_price=pos_data.get('average_price', 0),
+                        last_price=pos_data.get('last_price', 0),
+                        realized_pnl=pos_data.get('realised_pnl', 0),
+                        unrealized_pnl=pos_data.get('unrealised_pnl', 0)
+                    )
+                    
+                    self.current_positions[position.symbol] = position
+                    self.risk_manager.update_position(position)
+                
+                # Update strategy state
+                self.strategy_state.current_positions = list(self.current_positions.values())
+                self.strategy_state.last_updated = datetime.now()
+                
+            else:
+                # In backtesting, we manage positions internally
+                # Update with internal positions
+                self.strategy_state.current_positions = list(self.current_positions.values())
+                self.strategy_state.last_updated = datetime.now()
+                
+        except Exception as e:
+            logger.error(f"Error updating positions: {e}")
+    
+    def execute_strategy_cycle(self):
+        """
+        Execute one complete strategy cycle: check positions, execute trades as needed
+        """
+        try:
+            # Update positions from broker
+            self.update_positions()
+            
+            # Monitor existing positions
+            self.monitor_positions()
+            
+            # Determine which strategy to execute based on current positions
+            stock_positions = [pos for pos in self.current_positions.values() if pos.quantity > 0]
+            
+            if stock_positions:
+                # Execute covered calls if we have stock
+                self.execute_covered_calls()
+            else:
+                # Execute cash-secured puts if we don't have stock
+                self.execute_cash_secured_puts()
+            
+            # Update performance metrics
+            self.update_performance_metrics()
+            
+            # Log current strategy state
+            logger.info(f"Strategy cycle completed. Positions: {len(self.current_positions)}, "
+                       f"Active orders: {len(self.active_orders)}")
+            
+        except Exception as e:
+            logger.error(f"Error in strategy cycle: {e}")
+    
+    def update_performance_metrics(self):
+        """
+        Update performance metrics for the strategy
+        """
+        try:
+            # Calculate total P&L from all positions
+            total_pnl = 0.0
+            for pos in self.current_positions.values():
+                total_pnl += pos.realized_pnl + pos.unrealized_pnl
+            
+            self.performance_metrics['total_pnl'] = total_pnl
+            
+            # Update daily P&L
+            self.strategy_state.daily_pnl = total_pnl
+            
+            # Update other metrics
+            self.performance_metrics['total_trades'] = len(self.historical_trades)
+            
+            # Calculate win rate and other metrics based on trade history
+            winning_trades = sum(1 for trade in self.historical_trades if trade.average_price > 0)
+            total_trades = len(self.historical_trades)
+            
+            if total_trades > 0:
+                self.performance_metrics['win_rate'] = (winning_trades / total_trades) * 100
+                self.performance_metrics['winning_trades'] = winning_trades
+                self.performance_metrics['losing_trades'] = total_trades - winning_trades
+            
+        except Exception as e:
+            logger.error(f"Error updating performance metrics: {e}")
+    
+    def main_loop(self):
+        """
+        Main execution loop that runs the strategy continuously during market hours
+        """
+        logger.info("Starting main strategy loop")
+        
+        while self.running:
+            try:
+                # Check if market is open
+                if self.is_market_open():
+                    # Execute strategy cycle
+                    self.execute_strategy_cycle()
+                    
+                    # Save strategy state periodically
+                    self.save_strategy_state()
+                else:
+                    logger.info("Market is closed, waiting...")
+                    
+                    # Even when market is closed, we still need to check for any pending orders
+                    # or positions that need management (e.g. end of day processes)
+                    pass
+                
+                # Wait for the configured interval before next cycle
+                time.sleep(self.config.strategy_run_interval_seconds)
+                
+            except KeyboardInterrupt:
+                logger.info("Keyboard interrupt received, stopping...")
+                break
+            except Exception as e:
+                logger.error(f"Error in main loop: {e}")
+                
+                # Continue the loop even if there's an error
+                # This prevents the strategy from stopping due to temporary issues
+                time.sleep(60)  # Wait a minute before trying again
+    
+    def start(self):
+        """
+        Start the strategy execution
+        """
+        if self.running:
+            logger.warning("Strategy is already running")
+            return
+        
+        # Set up signal handling for graceful shutdown
+        def signal_handler(sig, frame):
+            logger.info(f"Received signal {sig}, initiating graceful shutdown...")
+            self.stop()
+            sys.exit(0)
+        
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        
+        # Initialize the strategy
+        logger.info("Initializing Options Wheel Strategy...")
+        
+        # Start main execution loop in a separate thread
+        self.running = True
+        self.main_loop_thread = threading.Thread(target=self.main_loop)
+        self.main_loop_thread.start()
+        
+        logger.info("Options Wheel Strategy started successfully")
+        self.notification_manager.notify_system_event("Strategy Start", "Options Wheel Strategy is now running")
+    
+    def stop(self):
+        """
+        Stop the strategy execution
+        """
+        if not self.running:
+            logger.info("Strategy is not running")
+            return
+        
+        logger.info("Stopping Options Wheel Strategy...")
+        self.running = False
+        
+        # Wait for main loop thread to finish
+        if self.main_loop_thread and self.main_loop_thread.is_alive():
+            self.main_loop_thread.join(timeout=10)  # Wait up to 10 seconds
+        
+        # Save final state
+        self.save_strategy_state()
+        
+        # Send stop notification
+        self.notification_manager.notify_system_event("Strategy Stop", "Options Wheel Strategy has stopped")
+        
+        logger.info("Options Wheel Strategy stopped")
+    
+    def get_strategy_status(self) -> Dict[str, Any]:
+        """
+        Get current status of the strategy
+        
+        Returns:
+            Dictionary with strategy status information
+        """
+        return {
+            'running': self.running,
+            'positions_count': len(self.current_positions),
+            'active_orders_count': len(self.active_orders),
+            'current_strategy_type': self.strategy_state.strategy_type.value,
+            'daily_pnl': self.strategy_state.daily_pnl,
+            'total_pnl': self.performance_metrics['total_pnl'],
+            'last_updated': self.strategy_state.last_updated.isoformat(),
+            'portfolio_value': self.get_portfolio_value(),
+            'available_capital': self.get_available_capital(),
+            'performance_metrics': self.performance_metrics
+        }
+    
+    def get_risk_report(self) -> Dict[str, Any]:
+        """
+        Get current risk report for the strategy
+        
+        Returns:
+            Dictionary with risk metrics
+        """
+        portfolio_value = self.get_portfolio_value()
+        return self.risk_manager.calculate_portfolio_risk(
+            list(self.current_positions.values()), 
+            portfolio_value
+        )
+
+    def check_critical_alerts(self) -> Dict[str, Any]:
+        """
+        Check for critical alert conditions and send notifications if triggered
+        
+        Returns:
+            Dictionary with alert status
+        """
+        alerts = {
+            'margin_shortfall': False,
+            'daily_loss_breached': False,
+            'api_token_expired': False,
+            'strategy_stalled': False,
+            'alerts_triggered': []
+        }
+        
+        try:
+            # Check margin shortfall
+            margins = self.get_margin_info()
+            available_cash = margins.get('available', {}).get('cash', 0)
+            if available_cash < self.config.min_cash_reserve:
+                alerts['margin_shortfall'] = True
+                alerts['alerts_triggered'].append('Margin shortfall detected')
+                self.notification_manager.notify_error(
+                    "Critical Alert: Margin Shortfall", 
+                    f"Available cash: {available_cash}, Minimum required: {self.config.min_cash_reserve}"
+                )
+            
+            # Check if daily loss limit is exceeded
+            if hasattr(self, 'daily_pnl') and -abs(self.strategy_state.daily_pnl) <= -abs(self.config.max_daily_loss_limit):
+                alerts['daily_loss_breached'] = True
+                alerts['alerts_triggered'].append('Daily loss limit reached')
+                self.notification_manager.notify_error(
+                    "Critical Alert: Daily Loss Limit Reached", 
+                    f"Daily P&L: {self.strategy_state.daily_pnl}, Limit: -{self.config.max_daily_loss_limit}"
+                )
+            
+            # Check for API token issues (would manifest as repeated API errors)
+            # This would be detected by monitoring API response errors over time
+            
+            # Check if strategy loop has stalled (not updating for a while)
+            # This could be implemented by tracking last update time
+            
+        except Exception as e:
+            logger.error(f"Error checking critical alerts: {e}")
+        
+        return alerts
+
+
+
+    def _approximate_delta(self, option: OptionContract, underlying_price: float) -> float:
+        """
+        Approximate the delta of an option based on moneyness and time to expiry
+        
+        Args:
+            option: OptionContract to approximate delta for
+            underlying_price: Current price of the underlying
+            
+        Returns:
+            Approximated delta value (0 to 1 for calls, -1 to 0 for puts)
+        """
+        try:
+            # Calculate moneyness (how far ITM/OTM the option is)
+            moneyness = (underlying_price - option.strike_price) / option.strike_price
+            
+            # Determine if this is a call or put
+            is_call = option.option_type == OptionType.CALL
+            
+            # Simple approximation based on moneyness
+            # For calls: ITM -> delta approaches 1, ATM -> delta around 0.5, OTM -> delta approaches 0
+            # For puts: ITM -> delta approaches -1, ATM -> delta around -0.5, OTM -> delta approaches 0
+            if is_call:
+                if moneyness > 0.05:  # Deep ITM
+                    return min(0.95, 0.5 + moneyness * 2)
+                elif moneyness < -0.05:  # Deep OTM
+                    moneyness_abs = abs(moneyness)
+                    return max(0.05, 0.5 - moneyness_abs * 2)
+                else:  # ATM
+                    return 0.45 + moneyness * 2  # Around 0.5 for ATM options
+            else:  # PUT
+                if moneyness > 0.05:  # Deep ITM for put would be underlying << strike, so moneyness < 0
+                    moneyness_val = -moneyness  # Flip for put perspective
+                    return -min(0.95, 0.5 + moneyness_val * 2)
+                elif moneyness < -0.05:  # Deep OTM from put perspective
+                    moneyness_abs = abs(moneyness)
+                    return -max(0.05, 0.5 - moneyness_abs * 2)
+                else:  # ATM
+                    return -0.45 - moneyness * 2  # Around -0.5 for ATM puts
+
+        except Exception as e:
+            logger.warning(f"Error approximating delta for {option.symbol}: {e}")
+            # Conservative fallback based on moneyness
+            moneyness = abs(underlying_price - option.strike_price) / option.strike_price
+            base_delta = max(0.05, 0.5 - moneyness)  # Conservative estimate
+            return -base_delta if option.option_type == OptionType.PUT else base_delta
+    def _get_adjusted_delta_range(self) -> tuple:
+        """
+        Get delta range based on strategy mode (conservative, balanced, aggressive)
+        
+        Returns:
+            Tuple of (low, high) delta values
+        """
+        mode = self.config.strategy_mode.lower()
+        
+        if mode == 'conservative':
+            # More OTM options (lower deltas): 0.10-0.15
+            return (0.10, 0.15)
+        elif mode == 'aggressive':
+            # Less OTM options (higher deltas): 0.25-0.35
+            return (0.25, 0.35)
+        else:  # balanced (default)
+            # Standard delta range: 0.15-0.25
+            return (self.config.otm_delta_range_low, self.config.otm_delta_range_high)
+
+# Example usage
+if __name__ == "__main__":
+    # Create a configuration instance
+    config = OptionWheelConfig()
+    
+    # Initialize the strategy (without Kite for testing)
+    strategy = OptionWheelStrategy(config, kite_client=None)
+    
+    # Print strategy status
+    status = strategy.get_strategy_status()
+    print("Strategy Status:", status)
+    
+    # Print risk report
+    risk_report = strategy.get_risk_report()
+    print("Risk Report:", risk_report)
+    
+    print("Strategy initialized successfully!"), symbol)
+        if match:
+            strike = int(match.group(1))
+            option_type = match.group(2)  # CE or PE
+            return strike, option_type
+        return None, None
+
+    def _generate_mock_option_chain(self, symbol: str) -> List[OptionContract]:
+        """
+        Generate mock option chain for backtesting/dry run
+        """
+        from random import uniform
+        contracts = []
+        
+        # Generate mock strikes around current price
+        current_price = self.get_underlying_price(symbol)
+        if current_price <= 0:
+            current_price = 15000  # Default for NIFTY
+            
+        # Create mock strikes
+        strikes = [int(current_price * factor) for factor in [0.95, 0.97, 0.99, 1.01, 1.03, 1.05]]
+        
+        # Create CE and PE contracts for each strike
+        for strike in strikes:
+            for option_type_str in ['CE', 'PE']:
+                # Generate mock expiry (next 3 weekly expiries)
+                for i in range(3):
+                    expiry = datetime.now() + timedelta(days=7*(i+1))
+                    
+                    # Generate mock price based on moneyness
+                    diff = abs(current_price - strike) / current_price
+                    if ('CE' == option_type_str and strike > current_price) or ('PE' == option_type_str and strike < current_price):
+                        # OTM - lower price
+                        mock_price = max(20.0, uniform(20.0, 80.0) * (1 - diff))
+                    else:
+                        # ITM - higher price
+                        mock_price = max(50.0, uniform(50.0, 200.0))
+                    
+                    contract = OptionContract(
+                        symbol=f"{symbol}{str(expiry.date()).replace('-', '')[2:]}{strike}{option_type_str}",
+                        instrument_token=0,  # Mock
+                        exchange=ExchangeType.NFO,
+                        option_type=OptionType.CALL if option_type_str == 'CE' else OptionType.PUT,
+                        strike_price=strike,
+                        expiry_date=expiry,
+                        last_price=mock_price,
+                        open_interest=int(uniform(10000, 50000)),
+                        volume=int(uniform(1000, 10000)),
+                        oi_day_high=0,
+                        oi_day_low=0,
+                        bid_price=mock_price - 0.05,
+                        ask_price=mock_price + 0.05,
+                        underlying_value=current_price,
+                        delta=None,  # Mock
+                        gamma=None,  # Mock
+                        theta=None,  # Mock
+                        vega=None,   # Mock
+                        rho=None     # Mock
+                    )
+                    contracts.append(contract)
+        
+        return contracts
+
+    def _get_cached_data(self, key: str) -> Any:
+        """
+        Get cached data if it exists and is still fresh
+        """
+        try:
+            if hasattr(self, '_cache') and key in self._cache:
+                data, timestamp = self._cache[key]
+                age = (datetime.now() - timestamp).total_seconds()
+                # Check if cached data is still valid (within refresh interval)
+                if age < self.config.data_refresh_interval:
+                    return data
+                else:
+                    # Remove expired cache entry
+                    del self._cache[key]
+        except Exception:
+            pass
+        return None
+
+    def _cache_data(self, key: str, data: Any, ttl: int):
+        """
+        Cache data with expiration
+        """
+        try:
+            if not hasattr(self, '_cache'):
+                self._cache = {}
+            self._cache[key] = (data, datetime.now())
+        except Exception:
+            pass
+    
+    def get_nearest_expiry_options(self, symbol: str = "NIFTY") -> List[OptionContract]:
+        """
+        Get options contracts for the nearest expiry date
+        
+        Args:
+            symbol: Symbol to get options for
+            
+        Returns:
+            List of OptionContract objects for nearest expiry
+        """
+        try:
+            option_chain = self.fetch_option_chain(symbol)
+            if not option_chain:
+                logger.error(f"No option chain data for {symbol}")
+                return []
+            
+            # Find the nearest expiry date
+            current_time = datetime.now()
+            expiry_dates = set(oc.expiry_date for oc in option_chain if oc.expiry_date)
+            valid_expiry_dates = [dt for dt in expiry_dates if dt >= current_time.date()]
+            
+            if not valid_expiry_dates:
+                logger.error(f"No valid expiry dates found for {symbol}")
+                return []
+            
+            nearest_expiry = min(valid_expiry_dates)
+            nearest_contracts = [oc for oc in option_chain if oc.expiry_date == nearest_expiry]
+            
+            logger.info(f"Found {len(nearest_contracts)} contracts for nearest expiry {nearest_expiry}")
+            return nearest_contracts
+        except Exception as e:
+            logger.error(f"Error getting nearest expiry options for {symbol}: {e}")
+            return []
+    
+    def find_best_strike(self, options: List[OptionContract], option_type: OptionType, 
+                        underlying_price: float) -> Optional[OptionContract]:
+        """
+        Find the best strike based on delta range and open interest
+        
+        Args:
+            options: List of option contracts to evaluate
+            option_type: Type of option (CALL or PUT)
+            underlying_price: Current price of the underlying
+            
+        Returns:
+            Best OptionContract or None if not found
+        """
+        try:
+            # Filter by option type
+            filtered_options = [opt for opt in options if opt.option_type == option_type]
+            
+            # Filter by delta range (if available)
+            if option_type == OptionType.PUT:
+                # For cash-secured puts: OTM puts (strike < underlying)
+                otm_options = [opt for opt in filtered_options if opt.strike_price < underlying_price]
+            else:  # CALL
+                # For covered calls: OTM calls (strike > underlying)
+                otm_options = [opt for opt in filtered_options if opt.strike_price > underlying_price]
+            
+            # Filter by our delta criteria and minimum open interest
+            filtered_options = []
+            for opt in otm_options:
+                if opt.open_interest >= self.config.min_open_interest:
+                    # Calculate approximate delta if not available
+                    if opt.delta is not None:
+                        delta_abs = abs(opt.delta)
+                    else:
+                        # Approximate delta based on moneyness
+                        moneyness = abs(underlying_price - opt.strike_price) / underlying_price
+                        delta_abs = 0.5 - moneyness if moneyness < 0.5 else 0.05  # Rough approximation
+                    
+                    # Check if delta is in our target range
+                    if (self.config.otm_delta_range_low <= delta_abs <= self.config.otm_delta_range_high):
+                        filtered_options.append(opt)
+            
+            if not filtered_options:
+                logger.info(f"No suitable {option_type.value} options found matching criteria")
+                return None
+            
+            # Select the option with the best premium (highest last_price)
+            best_option = max(filtered_options, key=lambda x: x.last_price)
+            
+            logger.info(f"Best {option_type.value} option found: {best_option.symbol} at {best_option.last_price}")
+            return best_option
+        except Exception as e:
+            logger.error(f"Error finding best strike: {e}")
+            return None
+    
+    def place_order(self, symbol: str, transaction_type: TransactionType, quantity: int, 
+                   price: float, trigger_price: float = 0, order_type: OrderType = OrderType.MARKET) -> Optional[str]:
+        """
+        Place an order using the Kite API
+        
+        Args:
+            symbol: Trading symbol
+            transaction_type: BUY or SELL
+            quantity: Quantity to trade
+            price: Price for LIMIT orders
+            trigger_price: Trigger price for SL orders
+            order_type: Order type (MARKET, LIMIT, SL, SLM)
+            
+        Returns:
+            Order ID if successful, None otherwise
+        """
+        try:
+            # Check kill switch first
+            if self.check_kill_switch():
+                logger.warning("Kill switch activated, not placing order")
+                return None
+                
+            # Calculate required margin for the order
+            required_margin = price * quantity  # This is a simplified calculation
+            
+            # Check if order type and quantity comply with Indian market rules
+            product_type = self._get_product_type_for_order(symbol, transaction_type)
+            
+            if not self.is_sufficient_margin(required_margin):
+                logger.warning(f"Insufficient margin to place order for {symbol}")
+                return None
+
+            if not self.kite:
+                logger.warning("Running in backtesting mode - simulating order placement")
+                # For backtesting, create a mock order ID
+                import random
+                order_id = f"BT{random.randint(100000, 999999)}"
+                
+                # Create mock order details
+                mock_order = {
+                    'order_id': order_id,
+                    'status': 'COMPLETE',
+                    'average_price': price,
+                    'filled_quantity': quantity,
+                    'pending_quantity': 0
+                }
+                
+                # Update active orders
+                self.active_orders[order_id] = mock_order
+                
+                logger.info(f"Mock order placed: {order_id} for {symbol}")
+                return order_id
+            
+            # If dry run mode, only log the order but don't place it
+            if self.config.dry_run:
+                logger.info(f"[DRY RUN] Would have placed order: {transaction_type.value} {quantity} {symbol} at {price}")
+                logger.info(f"[DRY RUN] Order parameters: {symbol}, {transaction_type.value}, {quantity}, {price}, {order_type.value}")
+                
+                # Create a mock order ID for dry run
+                import random
+                order_id = f"DRY{random.randint(100000, 999999)}"
+                
+                # Track as a mock order
+                self.active_orders[order_id] = {
+                    'symbol': symbol,
+                    'status': 'COMPLETE',  # Mark as complete in dry run
+                    'quantity': quantity,
+                    'price': price,
+                    'transaction_type': transaction_type,
+                    'dry_run': True
+                }
+                
+                # Send notification indicating dry run
+                self.notification_manager.notify_order_placed(
+                    order_id, f"[DRY RUN] {symbol}", quantity, price, transaction_type.value
+                )
+                
+                return order_id
+
+            # Place live order
+            order_params = {
+                "variety": "regular",
+                "exchange": "NFO",  # For options
+                "tradingsymbol": symbol,
+                "transaction_type": transaction_type.value,
+                "quantity": quantity,
+                "product": product_type.value,  # Using proper product type
+                "order_type": order_type.value,
+                "validity": "DAY"  # Good for the day
+            }
+            
+            # Set price and trigger_price based on order type
+            if order_type == OrderType.LIMIT:
+                order_params["price"] = price
+            elif order_type == OrderType.MARKET:
+                # For market orders, price is not required
+                pass
+            else:
+                # For SL orders
+                order_params["price"] = price
+                order_params["trigger_price"] = trigger_price
+            
+            order_id = self.kite.place_order(**order_params)
+            
+            logger.info(f"Live order placed: {order_id} for {symbol}")
+            
+            # Track the order
+            self.active_orders[order_id] = {
+                'symbol': symbol,
+                'status': 'OPEN',
+                'quantity': quantity,
+                'price': price,
+                'transaction_type': transaction_type,
+                'product_type': product_type
+            }
+            
+            # Send notification
+            self.notification_manager.notify_order_placed(
+                order_id, symbol, quantity, price, transaction_type.value
+            )
+            
+            return order_id
+            
+        except Exception as e:
+            logger.error(f"Error placing order for {symbol}: {e}")
+            self.notification_manager.notify_error("Order Placement", f"Failed to place order for {symbol}: {e}")
+            return None
+
+    def _get_product_type_for_order(self, symbol: str, transaction_type: TransactionType) -> ProductType:
+        """
+        Determine the appropriate product type for an order based on Indian market rules
+        
+        Args:
+            symbol: Trading symbol
+            transaction_type: Transaction type (BUY/SELL)
+            
+        Returns:
+            ProductType: Appropriate product type for the order
+        """
+        # For options trading, we typically use NRML for overnight positions
+        # and MIS for intraday positions
+        # For the Options Wheel strategy, we want to hold positions overnight
+        # so we'll use NRML (Normal) product type
+        return ProductType.NRML
+
+    def calculate_position_size(self, underlying_price: float) -> int:
+        """
+        Calculate dynamic position size based on risk parameters
+        
+        Args:
+            underlying_price: Current price of the underlying asset
+            
+        Returns:
+            int: Calculated position size (quantity)
+        """
+        try:
+            # Calculate max risk based on portfolio value and risk parameters
+            portfolio_value = self.get_portfolio_value()
+            max_risk = portfolio_value * self.config.risk_per_trade_percent
+            
+            # Calculate position size based on risk and underlying price
+            max_lots = int(max_risk / (underlying_price * self.config.quantity_per_lot))
+            
+            # Ensure minimum lot size is at least 1
+            calculated_lots = max(1, max_lots)
+            
+            # Don't exceed the configured maximum quantity
+            final_lots = min(calculated_lots, int(self.config.quantity_per_lot))
+            
+            # Ensure we have sufficient margin for the calculated position
+            required_margin = underlying_price * final_lots * self.config.quantity_per_lot
+            if not self.is_sufficient_margin(required_margin):
+                # Reduce position size if margin is insufficient
+                available_capital = self.get_available_capital()
+                max_lots_with_margin = int(available_capital / (underlying_price * self.config.quantity_per_lot))
+                final_lots = max(1, max_lots_with_margin)
+            
+            logger.debug(f"Position sizing: Portfolio={portfolio_value}, Risk%={self.config.risk_per_trade_percent}, "
+                        f"Max Risk={max_risk}, Calculated lots={calculated_lots}, Final lots={final_lots}")
+            
+            return final_lots * self.config.quantity_per_lot  # Return total quantity, not number of lots
+        except Exception as e:
+            logger.error(f"Error calculating position size: {e}")
+            # Fallback to config default
+            return self.config.quantity_per_lot
+    
+    def execute_cash_secured_puts(self):
+        """
+        Execute Cash-Secured Puts strategy: sell OTM puts to collect premium
+        """
+        logger.info("Executing Cash-Secured Puts strategy")
+        
+        try:
+            # Check if we already have any stock positions
+            stock_positions = {symbol: pos for symbol, pos in self.current_positions.items() 
+                              if pos.quantity > 0}
+            
+            # Only execute cash-secured puts if we don't have the underlying
+            if stock_positions:
+                logger.info("Stock position exists, skipping Cash-Secured Puts")
+                return
+            
+            # Get underlying price
+            underlying_price = self.get_underlying_price(self.config.symbol)
+            if not underlying_price:
+                logger.error(f"Could not get underlying price for {self.config.symbol}")
+                return
+            
+            # Calculate dynamic position size
+            quantity = self.calculate_position_size(underlying_price)
+            
+            # Check risk management
+            portfolio_value = self.get_portfolio_value()
+            if not self.risk_manager.should_place_order(self.config.symbol, 
+                                                      quantity, 
+                                                      underlying_price, 
+                                                      portfolio_value)[0]:
+                logger.info("Risk check failed, not placing cash-secured put")
+                return
+            
+            # Get nearest expiry options
+            options = self.get_nearest_expiry_options(self.config.symbol)
+            if not options:
+                logger.error(f"No options available for {self.config.symbol}")
+                return
+            
+            # Find best OTM put
+            best_put = self.find_best_strike(options, OptionType.PUT, underlying_price)
+            if not best_put:
+                logger.info("No suitable put option found for cash-secured puts")
+                return
+            
+            # Calculate required capital for cash-secured put
+            # Need enough cash to buy the stock if assigned
+            required_capital = best_put.strike_price * quantity
+            
+            # Check if we have sufficient capital
+            available_capital = self.get_available_capital()
+            if available_capital < required_capital:
+                logger.warning(f"Insufficient capital for cash-secured put. Required: {required_capital}, Available: {available_capital}")
+                return
+            
+            # Place order to sell the put
+            order_id = self.place_order(
+                symbol=best_put.symbol,
+                transaction_type=TransactionType.SELL,
+                quantity=quantity,
+                price=best_put.last_price,
+                order_type=OrderType.MARKET
+            )
+            
+            if order_id:
+                logger.info(f"Cash-Secured Put placed: {best_put.symbol} at {best_put.last_price}, quantity: {quantity}")
+                self.strategy_state.strategy_type = StrategyType.CASH_SECURED_PUT
+                return order_id
+            else:
+                logger.error("Failed to place Cash-Secured Put order")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error executing Cash-Secured Puts: {e}")
+            return None
+    
+    def execute_covered_calls(self):
+        """
+        Execute Covered Calls strategy: sell OTM calls against existing stock holdings
+        """
+        logger.info("Executing Covered Calls strategy")
+        
+        try:
+            # Check if we have any stock positions
+            stock_positions = {symbol: pos for symbol, pos in self.current_positions.items() 
+                              if pos.quantity > 0}
+            
+            if not stock_positions:
+                logger.info("No stock positions for covered calls")
+                return
+            
+            # For each stock position, sell OTM call
+            order_ids = []
+            for symbol, position in stock_positions.items():
+                # Get current price of the stock
+                stock_price = self.get_underlying_price(symbol)
+                if not stock_price:
+                    logger.error(f"Could not get price for {symbol}")
+                    continue
+                
+                # Calculate dynamic position size for this stock
+                quantity = min(position.quantity, self.calculate_position_size(stock_price))
+                
+                # Get options for this stock
+                options = self.get_nearest_expiry_options(symbol)
+                if not options:
+                    logger.error(f"No options available for {symbol}")
+                    continue
+                
+                # Find best OTM call (strike > current price)
+                best_call = self.find_best_strike(options, OptionType.CALL, stock_price)
+                if not best_call:
+                    logger.info(f"No suitable call option found for {symbol}")
+                    continue
+                
+                # Check risk management
+                portfolio_value = self.get_portfolio_value()
+                if not self.risk_manager.should_place_order(symbol, 
+                                                          quantity,  # Use calculated quantity
+                                                          best_call.last_price, 
+                                                          portfolio_value)[0]:
+                    logger.info(f"Risk check failed for covered call on {symbol}")
+                    continue
+                
+                # Place order to sell the call
+                order_id = self.place_order(
+                    symbol=best_call.symbol,
+                    transaction_type=TransactionType.SELL,
+                    quantity=quantity,  # Use calculated quantity
+                    price=best_call.last_price,
+                    order_type=OrderType.MARKET
+                )
+                
+                if order_id:
+                    logger.info(f"Covered Call placed: {best_call.symbol} at {best_call.last_price}, quantity: {quantity} against {symbol}")
+                    order_ids.append(order_id)
+                    self.strategy_state.strategy_type = StrategyType.COVERED_CALL
+                else:
+                    logger.error(f"Failed to place Covered Call order for {best_call.symbol}")
+        
+            return order_ids
+            
+        except Exception as e:
+            logger.error(f"Error executing Covered Calls: {e}")
+            return []
+    
+    def monitor_positions(self):
+        """
+        Monitor existing positions and manage profit targets/stop losses
+        """
+        logger.debug("Monitoring positions for profit targets/stop losses")
+        
+        try:
+            for symbol, position in list(self.current_positions.items()):
+                # Get current price for this position
+                current_data = self.get_quote(symbol)
+                if not current_data:
+                    continue
+                
+                current_price = current_data.get('last_price', 0.0)
+                if current_price <= 0:
+                    continue
+                
+                # Calculate P&L
+                if position.quantity > 0:  # Long position
+                    pnl = (current_price - position.average_price) * position.quantity
+                else:  # Short position
+                    pnl = (position.average_price - current_price) * abs(position.quantity)
+                
+                # Calculate percentage P&L
+                avg_cost = position.average_price * abs(position.quantity)
+                if avg_cost > 0:
+                    pnl_pct = (pnl / avg_cost) * 100
+                else:
+                    continue
+                
+                # Check profit target
+                profit_target = self.config.profit_target_percentage * 100
+                if pnl_pct >= profit_target:
+                    logger.info(f"Profit target hit for {symbol}: {pnl_pct:.2f}%")
+                    self.close_position(symbol, "PROFIT_TARGET")
+                    self.notification_manager.notify_profit_target_hit(symbol, pnl)
+                
+                # Check stop loss
+                stop_loss = -self.config.loss_limit_percentage * 100
+                if pnl_pct <= stop_loss:
+                    logger.warning(f"Stop loss hit for {symbol}: {pnl_pct:.2f}%")
+                    self.close_position(symbol, "STOP_LOSS")
+                    self.notification_manager.notify_stop_loss_hit(symbol, pnl)
+            
+        except Exception as e:
+            logger.error(f"Error monitoring positions: {e}")
+    
+    def close_position(self, symbol: str, reason: str = "MANUAL"):
+        """
+        Close a position by placing an opposite order
+        """
+        try:
+            position = self.current_positions.get(symbol)
+            if not position:
+                logger.warning(f"No position found to close for {symbol}")
+                return False
+            
+            # Place order to close position
+            transaction_type = (TransactionType.BUY if position.quantity < 0 
+                              else TransactionType.SELL)
+            
+            current_data = self.get_quote(symbol)
+            if not current_data:
+                logger.error(f"Could not get price to close position for {symbol}")
+                return False
+            
+            price = current_data.get('last_price', 0.0)
+            quantity = abs(position.quantity)
+            
+            order_id = self.place_order(
+                symbol=symbol,
+                transaction_type=transaction_type,
+                quantity=quantity,
+                price=price,
+                order_type=OrderType.MARKET
+            )
+            
+            if order_id:
+                # Remove position after successful order
+                if symbol in self.current_positions:
+                    del self.current_positions[symbol]
+                
+                logger.info(f"Position closed for {symbol} (Reason: {reason})")
+                self.notification_manager.notify_position_closed(symbol, 
+                    (price - position.average_price) * position.quantity if position.quantity > 0 
+                    else (position.average_price - price) * abs(position.quantity))
+                return True
+            else:
+                logger.error(f"Failed to close position for {symbol}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error closing position for {symbol}: {e}")
+            return False
+    
+    def get_underlying_price(self, symbol: str) -> float:
+        """
+        Get the current price of the underlying asset
+        
+        Args:
+            symbol: Symbol to get price for
+            
+        Returns:
+            Current price of the underlying or 0.0 if not available
+        """
+        try:
+            if self.kite:
+                quote = self.kite.quote([symbol])
+                if symbol in quote:
+                    return quote[symbol].get('last_price', 0.0)
+            else:
+                # For backtesting, return a mock price
+                import random
+                return random.uniform(1000, 5000)  # Mock price between 1000-5000
+            
+            return 0.0
+        except Exception as e:
+            logger.error(f"Error getting price for {symbol}: {e}")
+            return 0.0
+    
+    def get_quote(self, symbol: str) -> Dict:
+        """
+        Get market quote for a symbol
+        
+        Args:
+            symbol: Symbol to get quote for
+            
+        Returns:
+            Dictionary with market data
+        """
+        try:
+            if self.kite:
+                return self.kite.quote([symbol]).get(symbol, {})
+            else:
+                # For backtesting
+                return {
+                    'last_price': self.get_underlying_price(symbol),
+                    'ohlc': {'open': 0, 'high': 0, 'low': 0, 'close': 0}
+                }
+        except Exception as e:
+            logger.error(f"Error getting quote for {symbol}: {e}")
+            return {}
+    
+    def get_portfolio_value(self) -> float:
+        """
+        Calculate total portfolio value
+        
+        Returns:
+            Total portfolio value
+        """
+        try:
+            if self.kite:
+                holdings = self.kite.holdings()
+                positions = self.kite.positions()
+                
+                total_value = 0.0
+                
+                # Add value of holdings
+                for holding in holdings:
+                    total_value += holding.get('close_price', 0) * holding.get('quantity', 0)
+                
+                # Add value of positions
+                net_positions = positions.get('net', [])
+                for pos in net_positions:
+                    last_price = pos.get('last_price', 0)
+                    quantity = pos.get('quantity', 0)
+                    total_value += last_price * quantity
+                
+                # Add available cash
+                margins = self.kite.margins()
+                total_value += margins.get('available', {}).get('cash', 0)
+                
+                return total_value
+            else:
+                # For backtesting, return a mock value
+                return 100000.0  # Starting capital
+                
+        except Exception as e:
+            logger.error(f"Error calculating portfolio value: {e}")
+            return 0.0
+    
+    def get_available_capital(self) -> float:
+        """
+        Get available capital for trading
+        
+        Returns:
+            Available capital
+        """
+        try:
+            if self.kite:
+                margins = self.kite.margins()
+                return margins.get('available', {}).get('cash', 0)
+            else:
+                # For backtesting, return mock available capital
+                return 50000.0  # Mock value
+        except Exception as e:
+            logger.error(f"Error getting available capital: {e}")
+            return 0.0
+    
+    def update_positions(self):
+        """
+        Update position tracking with latest data from broker
+        """
+        try:
+            if self.kite:
+                positions = self.kite.positions()
+                
+                # Update net positions
+                net_positions = positions.get('net', [])
+                
+                for pos_data in net_positions:
+                    # Create or update Position objects
+                    position = Position(
+                        symbol=pos_data.get('tradingsymbol'),
+                        exchange=pos_data.get('exchange'),
+                        instrument_token=pos_data.get('instrument_token'),
+                        product=ProductType(pos_data.get('product')),
+                        quantity=pos_data.get('quantity', 0),
+                        average_price=pos_data.get('average_price', 0),
+                        last_price=pos_data.get('last_price', 0),
+                        realized_pnl=pos_data.get('realised_pnl', 0),
+                        unrealized_pnl=pos_data.get('unrealised_pnl', 0)
+                    )
+                    
+                    self.current_positions[position.symbol] = position
+                    self.risk_manager.update_position(position)
+                
+                # Update strategy state
+                self.strategy_state.current_positions = list(self.current_positions.values())
+                self.strategy_state.last_updated = datetime.now()
+                
+            else:
+                # In backtesting, we manage positions internally
+                # Update with internal positions
+                self.strategy_state.current_positions = list(self.current_positions.values())
+                self.strategy_state.last_updated = datetime.now()
+                
+        except Exception as e:
+            logger.error(f"Error updating positions: {e}")
+    
+    def execute_strategy_cycle(self):
+        """
+        Execute one complete strategy cycle: check positions, execute trades as needed
+        """
+        try:
+            # Update positions from broker
+            self.update_positions()
+            
+            # Monitor existing positions
+            self.monitor_positions()
+            
+            # Determine which strategy to execute based on current positions
+            stock_positions = [pos for pos in self.current_positions.values() if pos.quantity > 0]
+            
+            if stock_positions:
+                # Execute covered calls if we have stock
+                self.execute_covered_calls()
+            else:
+                # Execute cash-secured puts if we don't have stock
+                self.execute_cash_secured_puts()
+            
+            # Update performance metrics
+            self.update_performance_metrics()
+            
+            # Log current strategy state
+            logger.info(f"Strategy cycle completed. Positions: {len(self.current_positions)}, "
+                       f"Active orders: {len(self.active_orders)}")
+            
+        except Exception as e:
+            logger.error(f"Error in strategy cycle: {e}")
+    
+    def update_performance_metrics(self):
+        """
+        Update performance metrics for the strategy
+        """
+        try:
+            # Calculate total P&L from all positions
+            total_pnl = 0.0
+            for pos in self.current_positions.values():
+                total_pnl += pos.realized_pnl + pos.unrealized_pnl
+            
+            self.performance_metrics['total_pnl'] = total_pnl
+            
+            # Update daily P&L
+            self.strategy_state.daily_pnl = total_pnl
+            
+            # Update other metrics
+            self.performance_metrics['total_trades'] = len(self.historical_trades)
+            
+            # Calculate win rate and other metrics based on trade history
+            winning_trades = sum(1 for trade in self.historical_trades if trade.average_price > 0)
+            total_trades = len(self.historical_trades)
+            
+            if total_trades > 0:
+                self.performance_metrics['win_rate'] = (winning_trades / total_trades) * 100
+                self.performance_metrics['winning_trades'] = winning_trades
+                self.performance_metrics['losing_trades'] = total_trades - winning_trades
+            
+        except Exception as e:
+            logger.error(f"Error updating performance metrics: {e}")
+    
+    def main_loop(self):
+        """
+        Main execution loop that runs the strategy continuously during market hours
+        """
+        logger.info("Starting main strategy loop")
+        
+        while self.running:
+            try:
+                # Check if market is open
+                if self.is_market_open():
+                    # Execute strategy cycle
+                    self.execute_strategy_cycle()
+                    
+                    # Save strategy state periodically
+                    self.save_strategy_state()
+                else:
+                    logger.info("Market is closed, waiting...")
+                    
+                    # Even when market is closed, we still need to check for any pending orders
+                    # or positions that need management (e.g. end of day processes)
+                    pass
+                
+                # Wait for the configured interval before next cycle
+                time.sleep(self.config.strategy_run_interval_seconds)
+                
+            except KeyboardInterrupt:
+                logger.info("Keyboard interrupt received, stopping...")
+                break
+            except Exception as e:
+                logger.error(f"Error in main loop: {e}")
+                
+                # Continue the loop even if there's an error
+                # This prevents the strategy from stopping due to temporary issues
+                time.sleep(60)  # Wait a minute before trying again
+    
+    def start(self):
+        """
+        Start the strategy execution
+        """
+        if self.running:
+            logger.warning("Strategy is already running")
+            return
+        
+        # Set up signal handling for graceful shutdown
+        def signal_handler(sig, frame):
+            logger.info(f"Received signal {sig}, initiating graceful shutdown...")
+            self.stop()
+            sys.exit(0)
+        
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        
+        # Initialize the strategy
+        logger.info("Initializing Options Wheel Strategy...")
+        
+        # Start main execution loop in a separate thread
+        self.running = True
+        self.main_loop_thread = threading.Thread(target=self.main_loop)
+        self.main_loop_thread.start()
+        
+        logger.info("Options Wheel Strategy started successfully")
+        self.notification_manager.notify_system_event("Strategy Start", "Options Wheel Strategy is now running")
+    
+    def stop(self):
+        """
+        Stop the strategy execution
+        """
+        if not self.running:
+            logger.info("Strategy is not running")
+            return
+        
+        logger.info("Stopping Options Wheel Strategy...")
+        self.running = False
+        
+        # Wait for main loop thread to finish
+        if self.main_loop_thread and self.main_loop_thread.is_alive():
+            self.main_loop_thread.join(timeout=10)  # Wait up to 10 seconds
+        
+        # Save final state
+        self.save_strategy_state()
+        
+        # Send stop notification
+        self.notification_manager.notify_system_event("Strategy Stop", "Options Wheel Strategy has stopped")
+        
+        logger.info("Options Wheel Strategy stopped")
+    
+    def get_strategy_status(self) -> Dict[str, Any]:
+        """
+        Get current status of the strategy
+        
+        Returns:
+            Dictionary with strategy status information
+        """
+        return {
+            'running': self.running,
+            'positions_count': len(self.current_positions),
+            'active_orders_count': len(self.active_orders),
+            'current_strategy_type': self.strategy_state.strategy_type.value,
+            'daily_pnl': self.strategy_state.daily_pnl,
+            'total_pnl': self.performance_metrics['total_pnl'],
+            'last_updated': self.strategy_state.last_updated.isoformat(),
+            'portfolio_value': self.get_portfolio_value(),
+            'available_capital': self.get_available_capital(),
+            'performance_metrics': self.performance_metrics
+        }
+    
+    def get_risk_report(self) -> Dict[str, Any]:
+        """
+        Get current risk report for the strategy
+        
+        Returns:
+            Dictionary with risk metrics
+        """
+        portfolio_value = self.get_portfolio_value()
+        return self.risk_manager.calculate_portfolio_risk(
+            list(self.current_positions.values()), 
+            portfolio_value
+        )
+
+    def check_critical_alerts(self) -> Dict[str, Any]:
+        """
+        Check for critical alert conditions and send notifications if triggered
+        
+        Returns:
+            Dictionary with alert status
+        """
+        alerts = {
+            'margin_shortfall': False,
+            'daily_loss_breached': False,
+            'api_token_expired': False,
+            'strategy_stalled': False,
+            'alerts_triggered': []
+        }
+        
+        try:
+            # Check margin shortfall
+            margins = self.get_margin_info()
+            available_cash = margins.get('available', {}).get('cash', 0)
+            if available_cash < self.config.min_cash_reserve:
+                alerts['margin_shortfall'] = True
+                alerts['alerts_triggered'].append('Margin shortfall detected')
+                self.notification_manager.notify_error(
+                    "Critical Alert: Margin Shortfall", 
+                    f"Available cash: {available_cash}, Minimum required: {self.config.min_cash_reserve}"
+                )
+            
+            # Check if daily loss limit is exceeded
+            if hasattr(self, 'daily_pnl') and -abs(self.strategy_state.daily_pnl) <= -abs(self.config.max_daily_loss_limit):
+                alerts['daily_loss_breached'] = True
+                alerts['alerts_triggered'].append('Daily loss limit reached')
+                self.notification_manager.notify_error(
+                    "Critical Alert: Daily Loss Limit Reached", 
+                    f"Daily P&L: {self.strategy_state.daily_pnl}, Limit: -{self.config.max_daily_loss_limit}"
+                )
+            
+            # Check for API token issues (would manifest as repeated API errors)
+            # This would be detected by monitoring API response errors over time
+            
+            # Check if strategy loop has stalled (not updating for a while)
+            # This could be implemented by tracking last update time
+            
+        except Exception as e:
+            logger.error(f"Error checking critical alerts: {e}")
+        
+        return alerts
+
+
+
+    def _approximate_delta(self, option: OptionContract, underlying_price: float) -> float:
+        """
+        Approximate the delta of an option based on moneyness and time to expiry
+        
+        Args:
+            option: OptionContract to approximate delta for
+            underlying_price: Current price of the underlying
+            
+        Returns:
+            Approximated delta value (0 to 1 for calls, -1 to 0 for puts)
+        """
+        try:
+            # Calculate moneyness (how far ITM/OTM the option is)
+            moneyness = (underlying_price - option.strike_price) / option.strike_price
+            
+            # Determine if this is a call or put
+            is_call = option.option_type == OptionType.CALL
+            
+            # Simple approximation based on moneyness
+            # For calls: ITM -> delta approaches 1, ATM -> delta around 0.5, OTM -> delta approaches 0
+            # For puts: ITM -> delta approaches -1, ATM -> delta around -0.5, OTM -> delta approaches 0
+            if is_call:
+                if moneyness > 0.05:  # Deep ITM
+                    return min(0.95, 0.5 + moneyness * 2)
+                elif moneyness < -0.05:  # Deep OTM
+                    moneyness_abs = abs(moneyness)
+                    return max(0.05, 0.5 - moneyness_abs * 2)
+                else:  # ATM
+                    return 0.45 + moneyness * 2  # Around 0.5 for ATM options
+            else:  # PUT
+                if moneyness > 0.05:  # Deep ITM for put would be underlying << strike, so moneyness < 0
+                    moneyness_val = -moneyness  # Flip for put perspective
+                    return -min(0.95, 0.5 + moneyness_val * 2)
+                elif moneyness < -0.05:  # Deep OTM from put perspective
+                    moneyness_abs = abs(moneyness)
+                    return -max(0.05, 0.5 - moneyness_abs * 2)
+                else:  # ATM
+                    return -0.45 - moneyness * 2  # Around -0.5 for ATM puts
+
+        except Exception as e:
+            logger.warning(f"Error approximating delta for {option.symbol}: {e}")
+            # Conservative fallback based on moneyness
+            moneyness = abs(underlying_price - option.strike_price) / option.strike_price
+            base_delta = max(0.05, 0.5 - moneyness)  # Conservative estimate
+            return -base_delta if option.option_type == OptionType.PUT else base_delta
+    def _get_adjusted_delta_range(self) -> tuple:
+        """
+        Get delta range based on strategy mode (conservative, balanced, aggressive)
+        
+        Returns:
+            Tuple of (low, high) delta values
+        """
+        mode = self.config.strategy_mode.lower()
+        
+        if mode == 'conservative':
+            # More OTM options (lower deltas): 0.10-0.15
+            return (0.10, 0.15)
+        elif mode == 'aggressive':
+            # Less OTM options (higher deltas): 0.25-0.35
+            return (0.25, 0.35)
+        else:  # balanced (default)
+            # Standard delta range: 0.15-0.25
+            return (self.config.otm_delta_range_low, self.config.otm_delta_range_high)
+
+# Example usage
+if __name__ == "__main__":
+    # Create a configuration instance
+    config = OptionWheelConfig()
+    
+    # Initialize the strategy (without Kite for testing)
+    strategy = OptionWheelStrategy(config, kite_client=None)
+    
+    # Print strategy status
+    status = strategy.get_strategy_status()
+    print("Strategy Status:", status)
+    
+    # Print risk report
+    risk_report = strategy.get_risk_report()
+    print("Risk Report:", risk_report)
+    
+    print("Strategy initialized successfully!")

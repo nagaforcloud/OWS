@@ -1,0 +1,12 @@
+{
+  "type": "real",
+  "description": "Real NSE market data for Options Wheel Strategy backtesting",
+  "collection_date": "2025-09-25T23:48:04.153530",
+  "underlying_price": 24890.85,
+  "nearest_expiry": "2025-09-30T00:00:00",
+  "total_expiry_dates": 18,
+  "files": {
+    "option_chain": "backtesting_data/nifty_option_chain_real.csv",
+    "historical_data": null
+  }
+}

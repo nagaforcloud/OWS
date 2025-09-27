@@ -1,0 +1,9 @@
+2025-09-27 01:51:52 | WARNING  | notifications.notification_manager | notification_manager.py:40 | __init__() | Notifications are disabled - no webhook URL provided
+2025-09-27 01:51:52 | INFO     | database.database | database.py:142 | init_db() | Database initialized successfully
+2025-09-27 01:51:52 | INFO     | risk_management.risk_manager | risk_manager.py:58 | __init__() | Risk Manager initialized
+2025-09-27 01:51:52 | INFO     | core.strategy | strategy.py:89 | __init__() | Running in backtesting mode
+2025-09-27 01:51:52 | WARNING  | core.strategy | strategy.py:267 | is_sufficient_margin() | Insufficient margin: Required 2250000, Available 50000.0
+2025-09-27 01:51:52 | WARNING  | notifications.notification_manager | notification_manager.py:40 | __init__() | Notifications are disabled - no webhook URL provided
+2025-09-27 01:51:52 | INFO     | database.database | database.py:142 | init_db() | Database initialized successfully
+2025-09-27 01:51:52 | INFO     | risk_management.risk_manager | risk_manager.py:58 | __init__() | Risk Manager initialized
+2025-09-27 01:51:52 | INFO     | backtesting.nifty_backtesting | nifty_backtesting.py:61 | __init__() | NIFTY Backtesting Strategy initialized

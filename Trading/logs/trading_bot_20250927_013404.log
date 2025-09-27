@@ -1,0 +1,8 @@
+2025-09-27 01:34:04 | WARNING  | notifications.notification_manager | notification_manager.py:40 | __init__() | Notifications are disabled - no webhook URL provided
+2025-09-27 01:34:04 | INFO     | database.database | database.py:142 | init_db() | Database initialized successfully
+2025-09-27 01:34:04 | INFO     | risk_management.risk_manager | risk_manager.py:58 | __init__() | Risk Manager initialized
+2025-09-27 01:34:04 | INFO     | core.strategy | strategy.py:89 | __init__() | Running in backtesting mode
+2025-09-27 01:34:05 | WARNING  | core.strategy | strategy.py:267 | is_sufficient_margin() | Insufficient margin: Required 2250000, Available 50000.0
+2025-09-27 01:34:05 | WARNING  | notifications.notification_manager | notification_manager.py:40 | __init__() | Notifications are disabled - no webhook URL provided
+2025-09-27 01:34:05 | INFO     | database.database | database.py:142 | init_db() | Database initialized successfully
+2025-09-27 01:34:05 | INFO     | risk_management.risk_manager | risk_manager.py:58 | __init__() | Risk Manager initialized

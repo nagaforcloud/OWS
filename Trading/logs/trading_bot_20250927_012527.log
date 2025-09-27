@@ -1,0 +1,5 @@
+2025-09-27 01:25:27 | WARNING  | notifications.notification_manager | notification_manager.py:40 | __init__() | Notifications are disabled - no webhook URL provided
+2025-09-27 01:25:27 | INFO     | database.database | database.py:142 | init_db() | Database initialized successfully
+2025-09-27 01:25:27 | INFO     | risk_management.risk_manager | risk_manager.py:58 | __init__() | Risk Manager initialized
+2025-09-27 01:25:27 | INFO     | core.strategy | strategy.py:89 | __init__() | Running in backtesting mode
+2025-09-27 01:25:27 | WARNING  | notifications.notification_manager | notification_manager.py:40 | __init__() | Notifications are disabled - no webhook URL provided

@@ -1,0 +1,6 @@
+2025-09-26 00:55:23 | INFO     | __main__ | main.py:55 | run_backtesting() | Starting backtesting mode...
+2025-09-26 00:55:23 | INFO     | backtesting.nifty_backtesting | nifty_backtesting.py:54 | __init__() | NIFTY Backtesting Strategy initialized
+2025-09-26 00:55:23 | INFO     | __main__ | main.py:67 | run_backtesting() | Running backtest from 2025-08-27 to 2025-09-26
+2025-09-26 00:55:23 | INFO     | backtesting.nifty_backtesting | nifty_backtesting.py:117 | run_backtest() | Starting NIFTY backtesting...
+2025-09-26 00:55:23 | INFO     | backtesting.nifty_backtesting | nifty_backtesting.py:99 | load_historical_data() | Loaded historical data for NIFTY from 2025-08-27 00:55:23.009544 to 2025-09-26 00:55:23.009544
+2025-09-26 00:55:23 | INFO     | backtesting.nifty_backtesting | nifty_backtesting.py:178 | run_backtest() | Backtesting completed

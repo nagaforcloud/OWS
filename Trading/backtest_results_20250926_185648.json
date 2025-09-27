@@ -1,0 +1,224 @@
+{
+  "initial_capital": 100000,
+  "final_capital": 100000,
+  "total_return_percentage": 0.0,
+  "total_pnl": 0,
+  "total_trades": 0,
+  "profitable_trades": 0,
+  "win_rate": 0,
+  "max_drawdown_percentage": 0.0,
+  "profit_factor": Infinity,
+  "sharpe_ratio": 0,
+  "trades_history": [],
+  "performance_over_time": [
+    {
+      "date": "2025-08-27 18:56:48.742018",
+      "portfolio_value": 100000,
+      "capital": 100000,
+      "underlying_price": 2979.3839293077244,
+      "positions_count": 0,
+      "max_portfolio_value": 100000,
+      "min_portfolio_value": 100000
+    },
+    {
+      "date": "2025-08-28 18:56:48.742018",
+      "portfolio_value": 100000,
+      "capital": 100000,
+      "underlying_price": 3077.140201619845,
+      "positions_count": 0,
+      "max_portfolio_value": 100000,
+      "min_portfolio_value": 100000
+    },
+    {
+      "date": "2025-08-29 18:56:48.742018",
+      "portfolio_value": 100000,
+      "capital": 100000,
+      "underlying_price": 2950.9478597233087,
+      "positions_count": 0,
+      "max_portfolio_value": 100000,
+      "min_portfolio_value": 100000
+    },
+    {
+      "date": "2025-09-01 18:56:48.742018",
+      "portfolio_value": 100000,
+      "capital": 100000,
+      "underlying_price": 3003.4701868224106,
+      "positions_count": 0,
+      "max_portfolio_value": 100000,
+      "min_portfolio_value": 100000
+    },
+    {
+      "date": "2025-09-02 18:56:48.742018",
+      "portfolio_value": 100000,
+      "capital": 100000,
+      "underlying_price": 3088.4033549179185,
+      "positions_count": 0,
+      "max_portfolio_value": 100000,
+      "min_portfolio_value": 100000
+    },
+    {
+      "date": "2025-09-03 18:56:48.742018",
+      "portfolio_value": 100000,
+      "capital": 100000,
+      "underlying_price": 3160.9302117620177,
+      "positions_count": 0,
+      "max_portfolio_value": 100000,
+      "min_portfolio_value": 100000
+    },
+    {
+      "date": "2025-09-04 18:56:48.742018",
+      "portfolio_value": 100000,
+      "capital": 100000,
+      "underlying_price": 3116.912921651381,
+      "positions_count": 0,
+      "max_portfolio_value": 100000,
+      "min_portfolio_value": 100000
+    },
+    {
+      "date": "2025-09-05 18:56:48.742018",
+      "portfolio_value": 100000,
+      "capital": 100000,
+      "underlying_price": 3108.7752473570354,
+      "positions_count": 0,
+      "max_portfolio_value": 100000,
+      "min_portfolio_value": 100000
+    },
+    {
+      "date": "2025-09-08 18:56:48.742018",
+      "portfolio_value": 100000,
+      "capital": 100000,
+      "underlying_price": 3127.8722296298483,
+      "positions_count": 0,
+      "max_portfolio_value": 100000,
+      "min_portfolio_value": 100000
+    },
+    {
+      "date": "2025-09-09 18:56:48.742018",
+      "portfolio_value": 100000,
+      "capital": 100000,
+      "underlying_price": 3050.2884443554094,
+      "positions_count": 0,
+      "max_portfolio_value": 100000,
+      "min_portfolio_value": 100000
+    },
+    {
+      "date": "2025-09-10 18:56:48.742018",
+      "portfolio_value": 100000,
+      "capital": 100000,
+      "underlying_price": 3039.3284442694653,
+      "positions_count": 0,
+      "max_portfolio_value": 100000,
+      "min_portfolio_value": 100000
+    },
+    {
+      "date": "2025-09-11 18:56:48.742018",
+      "portfolio_value": 100000,
+      "capital": 100000,
+      "underlying_price": 3024.9573444722805,
+      "positions_count": 0,
+      "max_portfolio_value": 100000,
+      "min_portfolio_value": 100000
+    },
+    {
+      "date": "2025-09-12 18:56:48.742018",
+      "portfolio_value": 100000,
+      "capital": 100000,
+      "underlying_price": 2987.7842837440708,
+      "positions_count": 0,
+      "max_portfolio_value": 100000,
+      "min_portfolio_value": 100000
+    },
+    {
+      "date": "2025-09-15 18:56:48.742018",
+      "portfolio_value": 100000,
+      "capital": 100000,
+      "underlying_price": 3029.012977435774,
+      "positions_count": 0,
+      "max_portfolio_value": 100000,
+      "min_portfolio_value": 100000
+    },
+    {
+      "date": "2025-09-16 18:56:48.742018",
+      "portfolio_value": 100000,
+      "capital": 100000,
+      "underlying_price": 2992.0688836163354,
+      "positions_count": 0,
+      "max_portfolio_value": 100000,
+      "min_portfolio_value": 100000
+    },
+    {
+      "date": "2025-09-17 18:56:48.742018",
+      "portfolio_value": 100000,
+      "capital": 100000,
+      "underlying_price": 3077.649216288792,
+      "positions_count": 0,
+      "max_portfolio_value": 100000,
+      "min_portfolio_value": 100000
+    },
+    {
+      "date": "2025-09-18 18:56:48.742018",
+      "portfolio_value": 100000,
+      "capital": 100000,
+      "underlying_price": 3058.903211602055,
+      "positions_count": 0,
+      "max_portfolio_value": 100000,
+      "min_portfolio_value": 100000
+    },
+    {
+      "date": "2025-09-19 18:56:48.742018",
+      "portfolio_value": 100000,
+      "capital": 100000,
+      "underlying_price": 3054.91673004165,
+      "positions_count": 0,
+      "max_portfolio_value": 100000,
+      "min_portfolio_value": 100000
+    },
+    {
+      "date": "2025-09-22 18:56:48.742018",
+      "portfolio_value": 100000,
+      "capital": 100000,
+      "underlying_price": 3036.223630974192,
+      "positions_count": 0,
+      "max_portfolio_value": 100000,
+      "min_portfolio_value": 100000
+    },
+    {
+      "date": "2025-09-23 18:56:48.742018",
+      "portfolio_value": 100000,
+      "capital": 100000,
+      "underlying_price": 3084.0623102192626,
+      "positions_count": 0,
+      "max_portfolio_value": 100000,
+      "min_portfolio_value": 100000
+    },
+    {
+      "date": "2025-09-24 18:56:48.742018",
+      "portfolio_value": 100000,
+      "capital": 100000,
+      "underlying_price": 2936.5272510402547,
+      "positions_count": 0,
+      "max_portfolio_value": 100000,
+      "min_portfolio_value": 100000
+    },
+    {
+      "date": "2025-09-25 18:56:48.742018",
+      "portfolio_value": 100000,
+      "capital": 100000,
+      "underlying_price": 2880.955182359872,
+      "positions_count": 0,
+      "max_portfolio_value": 100000,
+      "min_portfolio_value": 100000
+    },
+    {
+      "date": "2025-09-26 18:56:48.742018",
+      "portfolio_value": 100000,
+      "capital": 100000,
+      "underlying_price": 2842.0777194811208,
+      "positions_count": 0,
+      "max_portfolio_value": 100000,
+      "min_portfolio_value": 100000
+    }
+  ],
+  "positions_at_end": 0,
+  "strategy_periods": 23
+}

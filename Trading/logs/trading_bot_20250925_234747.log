@@ -1,0 +1,11 @@
+2025-09-25 23:48:03 | INFO     | backtesting.nse_data_collector | nse_data_collector.py:60 | get_option_chain() | Successfully fetched option chain for NIFTY
+2025-09-25 23:48:03 | INFO     | backtesting.nse_data_collector | nse_data_collector.py:60 | get_option_chain() | Successfully fetched option chain for NIFTY
+2025-09-25 23:48:03 | INFO     | backtesting.nse_data_collector | nse_data_collector.py:60 | get_option_chain() | Successfully fetched option chain for NIFTY
+2025-09-25 23:48:03 | INFO     | backtesting.nse_data_collector | nse_data_collector.py:60 | get_option_chain() | Successfully fetched option chain for NIFTY
+2025-09-25 23:48:03 | INFO     | backtesting.nse_data_collector | nse_data_collector.py:60 | get_option_chain() | Successfully fetched option chain for NIFTY
+2025-09-25 23:48:03 | ERROR    | backtesting.nse_data_collector | nse_data_collector.py:180 | get_historical_data() | Failed to fetch historical data for NIFTY. Status code: 401
+2025-09-25 23:48:03 | INFO     | backtesting.nse_data_collector | nse_data_collector.py:60 | get_option_chain() | Successfully fetched option chain for NIFTY
+2025-09-25 23:48:03 | INFO     | backtesting.nse_data_collector | nse_data_collector.py:380 | save_option_chain_to_csv() | Option chain data saved to backtesting_data/nifty_option_chain_real.csv
+2025-09-25 23:48:03 | ERROR    | backtesting.nse_data_collector | nse_data_collector.py:180 | get_historical_data() | Failed to fetch historical data for NIFTY. Status code: 401
+2025-09-25 23:48:04 | INFO     | backtesting.nse_data_collector | nse_data_collector.py:60 | get_option_chain() | Successfully fetched option chain for NIFTY
+2025-09-25 23:48:04 | INFO     | backtesting.nse_data_collector | nse_data_collector.py:60 | get_option_chain() | Successfully fetched option chain for NIFTY

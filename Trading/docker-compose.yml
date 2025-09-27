@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  trading-bot:
+    build: .
+    container_name: options-wheel-trading-bot
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./trading_data.db:/app/trading_data.db
+      - .env:/app/.env
+    environment:
+      - PYTHONPATH=/app
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+    restart: unless-stopped
+    networks:
+      - trading-network
+
+  # Optional: PostgreSQL database for persistent storage
+  database:
+    image: postgres:13
+    container_name: trading-postgres-db
+    environment:
+      POSTGRES_DB: trading_db
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: secure_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    networks:
+      - trading-network
+
+volumes:
+  postgres_data:
+
+networks:
+  trading-network:
+    driver: bridge

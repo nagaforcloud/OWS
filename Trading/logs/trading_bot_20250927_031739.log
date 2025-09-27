@@ -1,0 +1,9 @@
+2025-09-27 03:17:39 | INFO     | __main__ | dashboard.py:214 | get_historical_trades_data() | Loaded 49 trades from /Users/nagashankar/pythonScripts/OWS/historical_trades/tradebook-ZI6046-FO-2022.csv
+2025-09-27 03:17:39 | INFO     | __main__ | dashboard.py:214 | get_historical_trades_data() | Loaded 194 trades from /Users/nagashankar/pythonScripts/OWS/historical_trades/tradebook-ZI6046-FO-2021.csv
+2025-09-27 03:17:39 | INFO     | __main__ | dashboard.py:214 | get_historical_trades_data() | Loaded 194 trades from /Users/nagashankar/pythonScripts/OWS/tradebook-ZI6046-FO.csv
+2025-09-27 03:19:15 | INFO     | __main__ | dashboard.py:214 | get_historical_trades_data() | Loaded 49 trades from /Users/nagashankar/pythonScripts/OWS/historical_trades/tradebook-ZI6046-FO-2022.csv
+2025-09-27 03:19:15 | INFO     | __main__ | dashboard.py:214 | get_historical_trades_data() | Loaded 194 trades from /Users/nagashankar/pythonScripts/OWS/historical_trades/tradebook-ZI6046-FO-2021.csv
+2025-09-27 03:19:15 | INFO     | __main__ | dashboard.py:214 | get_historical_trades_data() | Loaded 194 trades from /Users/nagashankar/pythonScripts/OWS/tradebook-ZI6046-FO.csv
+2025-09-27 03:20:03 | INFO     | __main__ | dashboard.py:214 | get_historical_trades_data() | Loaded 49 trades from /Users/nagashankar/pythonScripts/OWS/historical_trades/tradebook-ZI6046-FO-2022.csv
+2025-09-27 03:20:03 | INFO     | __main__ | dashboard.py:214 | get_historical_trades_data() | Loaded 194 trades from /Users/nagashankar/pythonScripts/OWS/historical_trades/tradebook-ZI6046-FO-2021.csv
+2025-09-27 03:20:03 | INFO     | __main__ | dashboard.py:214 | get_historical_trades_data() | Loaded 194 trades from /Users/nagashankar/pythonScripts/OWS/tradebook-ZI6046-FO.csv

@@ -1,0 +1,70 @@
+2025-09-27 01:04:16 | WARNING  | notifications.notification_manager | notification_manager.py:40 | __init__() | Notifications are disabled - no webhook URL provided
+2025-09-27 01:04:16 | INFO     | database.database | database.py:142 | init_db() | Database initialized successfully
+2025-09-27 01:04:16 | INFO     | risk_management.risk_manager | risk_manager.py:58 | __init__() | Risk Manager initialized
+2025-09-27 01:04:16 | INFO     | core.strategy | strategy.py:85 | __init__() | KiteConnect client initialized for live trading (DRY RUN MODE)
+2025-09-27 01:04:16 | WARNING  | notifications.notification_manager | notification_manager.py:40 | __init__() | Notifications are disabled - no webhook URL provided
+2025-09-27 01:04:16 | INFO     | database.database | database.py:142 | init_db() | Database initialized successfully
+2025-09-27 01:04:16 | INFO     | risk_management.risk_manager | risk_manager.py:58 | __init__() | Risk Manager initialized
+2025-09-27 01:04:16 | INFO     | core.strategy | strategy.py:85 | __init__() | KiteConnect client initialized for live trading (DRY RUN MODE)
+2025-09-27 01:04:16 | WARNING  | notifications.notification_manager | notification_manager.py:40 | __init__() | Notifications are disabled - no webhook URL provided
+2025-09-27 01:04:16 | INFO     | database.database | database.py:142 | init_db() | Database initialized successfully
+2025-09-27 01:04:16 | INFO     | risk_management.risk_manager | risk_manager.py:58 | __init__() | Risk Manager initialized
+2025-09-27 01:04:16 | INFO     | core.strategy | strategy.py:85 | __init__() | KiteConnect client initialized for live trading (DRY RUN MODE)
+2025-09-27 01:04:16 | WARNING  | notifications.notification_manager | notification_manager.py:40 | __init__() | Notifications are disabled - no webhook URL provided
+2025-09-27 01:04:16 | INFO     | database.database | database.py:142 | init_db() | Database initialized successfully
+2025-09-27 01:04:16 | INFO     | risk_management.risk_manager | risk_manager.py:58 | __init__() | Risk Manager initialized
+2025-09-27 01:04:16 | INFO     | core.strategy | strategy.py:85 | __init__() | KiteConnect client initialized for live trading (DRY RUN MODE)
+2025-09-27 01:04:16 | WARNING  | core.strategy | strategy.py:267 | is_sufficient_margin() | Insufficient margin: Required 2250000, Available 50000
+2025-09-27 01:04:16 | WARNING  | notifications.notification_manager | notification_manager.py:40 | __init__() | Notifications are disabled - no webhook URL provided
+2025-09-27 01:04:16 | INFO     | database.database | database.py:142 | init_db() | Database initialized successfully
+2025-09-27 01:04:16 | INFO     | risk_management.risk_manager | risk_manager.py:58 | __init__() | Risk Manager initialized
+2025-09-27 01:04:16 | INFO     | core.strategy | strategy.py:85 | __init__() | KiteConnect client initialized for live trading (DRY RUN MODE)
+2025-09-27 01:04:16 | WARNING  | notifications.notification_manager | notification_manager.py:40 | __init__() | Notifications are disabled - no webhook URL provided
+2025-09-27 01:04:16 | INFO     | database.database | database.py:142 | init_db() | Database initialized successfully
+2025-09-27 01:04:16 | INFO     | risk_management.risk_manager | risk_manager.py:58 | __init__() | Risk Manager initialized
+2025-09-27 01:04:16 | INFO     | core.strategy | strategy.py:85 | __init__() | KiteConnect client initialized for live trading (DRY RUN MODE)
+2025-09-27 01:04:16 | WARNING  | notifications.notification_manager | notification_manager.py:40 | __init__() | Notifications are disabled - no webhook URL provided
+2025-09-27 01:04:16 | INFO     | database.database | database.py:142 | init_db() | Database initialized successfully
+2025-09-27 01:04:16 | INFO     | risk_management.risk_manager | risk_manager.py:58 | __init__() | Risk Manager initialized
+2025-09-27 01:04:16 | INFO     | core.strategy | strategy.py:85 | __init__() | KiteConnect client initialized for live trading (DRY RUN MODE)
+2025-09-27 01:04:16 | WARNING  | notifications.notification_manager | notification_manager.py:40 | __init__() | Notifications are disabled - no webhook URL provided
+2025-09-27 01:04:16 | INFO     | database.database | database.py:142 | init_db() | Database initialized successfully
+2025-09-27 01:04:16 | INFO     | risk_management.risk_manager | risk_manager.py:58 | __init__() | Risk Manager initialized
+2025-09-27 01:04:16 | INFO     | core.strategy | strategy.py:85 | __init__() | KiteConnect client initialized for live trading (DRY RUN MODE)
+2025-09-27 01:04:16 | WARNING  | core.strategy | strategy.py:201 | check_kill_switch() | Kill switch activated: /var/folders/t4/yd8rgl4x3jv248bywj92zjhc0000gn/T/tmpppagsn6e/STOP_TRADING exists. Stopping trading.
+2025-09-27 01:04:16 | WARNING  | notifications.notification_manager | notification_manager.py:40 | __init__() | Notifications are disabled - no webhook URL provided
+2025-09-27 01:04:16 | INFO     | database.database | database.py:142 | init_db() | Database initialized successfully
+2025-09-27 01:04:16 | INFO     | risk_management.risk_manager | risk_manager.py:58 | __init__() | Risk Manager initialized
+2025-09-27 01:04:16 | INFO     | core.strategy | strategy.py:85 | __init__() | KiteConnect client initialized for live trading (DRY RUN MODE)
+2025-09-27 01:04:16 | WARNING  | core.strategy | strategy.py:267 | is_sufficient_margin() | Insufficient margin: Required 1000000, Available 50000
+2025-09-27 01:04:16 | WARNING  | notifications.notification_manager | notification_manager.py:40 | __init__() | Notifications are disabled - no webhook URL provided
+2025-09-27 01:04:16 | INFO     | database.database | database.py:142 | init_db() | Database initialized successfully
+2025-09-27 01:04:16 | INFO     | risk_management.risk_manager | risk_manager.py:58 | __init__() | Risk Manager initialized
+2025-09-27 01:04:16 | INFO     | core.strategy | strategy.py:85 | __init__() | KiteConnect client initialized for live trading (DRY RUN MODE)
+2025-09-27 01:04:16 | INFO     | core.strategy | strategy.py:333 | fetch_option_chain() | Using fallback: fetching from Kite instruments...
+2025-09-27 01:04:16 | INFO     | core.strategy | strategy.py:340 | fetch_option_chain() | Successfully fetched 0 contracts from Kite
+2025-09-27 01:04:16 | INFO     | core.strategy | strategy.py:357 | fetch_option_chain() | Successfully fetched 0 option contracts for NIFTY
+2025-09-27 01:04:16 | INFO     | core.strategy | strategy.py:333 | fetch_option_chain() | Using fallback: fetching from Kite instruments...
+2025-09-27 01:04:16 | INFO     | core.strategy | strategy.py:340 | fetch_option_chain() | Successfully fetched 0 contracts from Kite
+2025-09-27 01:04:16 | INFO     | core.strategy | strategy.py:357 | fetch_option_chain() | Successfully fetched 0 option contracts for NIFTY
+2025-09-27 01:04:16 | ERROR    | core.strategy | strategy.py:578 | get_nearest_expiry_options() | No option chain data for NIFTY
+2025-09-27 01:04:16 | WARNING  | notifications.notification_manager | notification_manager.py:40 | __init__() | Notifications are disabled - no webhook URL provided
+2025-09-27 01:04:16 | INFO     | database.database | database.py:142 | init_db() | Database initialized successfully
+2025-09-27 01:04:16 | INFO     | risk_management.risk_manager | risk_manager.py:58 | __init__() | Risk Manager initialized
+2025-09-27 01:04:16 | INFO     | core.strategy | strategy.py:85 | __init__() | KiteConnect client initialized for live trading (DRY RUN MODE)
+2025-09-27 01:04:16 | WARNING  | notifications.notification_manager | notification_manager.py:40 | __init__() | Notifications are disabled - no webhook URL provided
+2025-09-27 01:04:16 | INFO     | database.database | database.py:142 | init_db() | Database initialized successfully
+2025-09-27 01:04:16 | INFO     | risk_management.risk_manager | risk_manager.py:58 | __init__() | Risk Manager initialized
+2025-09-27 01:04:16 | INFO     | core.strategy | strategy.py:85 | __init__() | KiteConnect client initialized for live trading (DRY RUN MODE)
+2025-09-27 01:04:16 | WARNING  | notifications.notification_manager | notification_manager.py:40 | __init__() | Notifications are disabled - no webhook URL provided
+2025-09-27 01:04:16 | INFO     | database.database | database.py:142 | init_db() | Database initialized successfully
+2025-09-27 01:04:16 | INFO     | risk_management.risk_manager | risk_manager.py:58 | __init__() | Risk Manager initialized
+2025-09-27 01:04:16 | INFO     | core.strategy | strategy.py:85 | __init__() | KiteConnect client initialized for live trading (DRY RUN MODE)
+2025-09-27 01:04:16 | WARNING  | notifications.notification_manager | notification_manager.py:40 | __init__() | Notifications are disabled - no webhook URL provided
+2025-09-27 01:04:16 | INFO     | database.database | database.py:142 | init_db() | Database initialized successfully
+2025-09-27 01:04:16 | INFO     | risk_management.risk_manager | risk_manager.py:58 | __init__() | Risk Manager initialized
+2025-09-27 01:04:16 | INFO     | core.strategy | strategy.py:85 | __init__() | KiteConnect client initialized for live trading (DRY RUN MODE)
+2025-09-27 01:04:16 | WARNING  | notifications.notification_manager | notification_manager.py:40 | __init__() | Notifications are disabled - no webhook URL provided
+2025-09-27 01:04:16 | INFO     | database.database | database.py:142 | init_db() | Database initialized successfully
+2025-09-27 01:04:16 | INFO     | risk_management.risk_manager | risk_manager.py:58 | __init__() | Risk Manager initialized
+2025-09-27 01:04:16 | INFO     | core.strategy | strategy.py:85 | __init__() | KiteConnect client initialized for live trading (DRY RUN MODE)
